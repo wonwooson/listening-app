@@ -1,0 +1,16 @@
+**/node_modules/
+**/dist/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.npm-cache/
+**/data/
+**/.env
+**/.env.*
+**/*.log
+**/*.tsbuildinfo
+**/*.sqlite*
+**/*.db
+.codex/
+.agents/
+20260919_english/listening_baseline_2026-09-19.md
