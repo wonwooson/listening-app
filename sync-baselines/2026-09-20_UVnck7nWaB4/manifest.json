@@ -1,0 +1,47 @@
+{
+  "format": "listening-sync-baseline",
+  "version": 1,
+  "capturedAt": "2026-09-20T00:06:27.255279+00:00",
+  "source": {
+    "id": "UVnck7nWaB4",
+    "url": "https://www.youtube.com/watch?v=UVnck7nWaB4",
+    "title": "15,000MPH Colliding Explosions in Super Slow Motion - The Slow Mo guys",
+    "generated": true,
+    "preparedAt": "2026-09-19T23:42:03.303416+00:00",
+    "revision": "1a3b89b6f3071885f1fc"
+  },
+  "codeCommit": "272a647e8b63495550024d2c47cbf2e76aded97d",
+  "confirmation": {
+    "by": "user",
+    "date": "2026-09-20",
+    "assessment": "Playback and subtitles are in sync according to user feedback.",
+    "scope": "User experience; no measured acoustic error tolerance or exhaustive per-boundary review supplied."
+  },
+  "timingQuality": "caption-estimate",
+  "counts": {
+    "cues": 448,
+    "words": 3218,
+    "sentences": 456,
+    "chunks": 955,
+    "paragraphs": 20
+  },
+  "sha256": {
+    "transcript.json": "e618a10b026c6123d9594f62750bc861f618b90133d059544dfb377ed11b6773",
+    "analysis.json": "655aaf06e96f77ef2bbd00645e62ca613b184b0dbc25360e811325dbb946333f"
+  },
+  "codeSha256": {
+    "listening-app/backend/preparation.py": "1867131ab352f552d7876457c00c760d2bf593d5b63cb80ee386603bce6e44c8",
+    "listening-app/backend/gemini.py": "34b145f805edc64740f0e4b98b33421dfd5206fda50108a97dfe8833d43379b2",
+    "listening-app/backend/server.py": "2f2f707d14aa079b86ec81169da0aa560685274f6956bd1c8b25b0f66b0d3418",
+    "listening-app/src/SoundLab.tsx": "aa6e4047310d79366b6fb579d1c19e11777330c6dde7423527d12ca4434457df",
+    "listening-app/src/transcript.ts": "ee05f21b2c58a5f240b41d4cc6749eef5d472b234aa4eda47989f4a934e5c36c",
+    "listening-app/package-lock.json": "a1b2d6a200036cee7c8bb1fa7ef64e24bf0c515bb12e90082bc4a5c605a889ac"
+  },
+  "excludes": [
+    "API keys",
+    "personal listening notes",
+    "database",
+    "video/audio media",
+    "unsaved browser playback adjustments"
+  ]
+}
