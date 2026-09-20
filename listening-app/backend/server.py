@@ -348,6 +348,26 @@ def sound_input(d):
         if not isinstance(d.get(key,''),str) or len(d.get(key,''))>12000: raise HTTPException(400,'기록은 항목마다 12,000자 이내로 입력해주세요.')
     return e
 
+@app.get('/api/history/attempts')
+def history_attempts():
+    return sorted(store.all('attempt'),key=lambda a:a.get('at',''),reverse=True)
+
+
+@app.get('/api/sound-lab/history')
+def sound_history():
+    clips=sound_clips()
+    sources={s['id']:s for s in store.all('source')}
+    result=[]
+    for note in store.all('preference'):
+        if note.get('recordType')!='sound-note': continue
+        clip=next((c for c in clips if c['id']==note['exerciseId']),None)
+        if clip is None:
+            clip=next((c for c in clips if c['sourceId']==note.get('sourceId') and c['start']<=note['start']<c['end']),None)
+        result.append({**note,'title':sources.get(note.get('sourceId'),{}).get('title','영상 정보 없음'),
+                       'clipId':clip['id'] if clip else None})
+    return sorted(result,key=lambda n:n.get('at',''),reverse=True)
+
+
 @app.post('/api/sound-lab/notes')
 async def save_sound_note(request:Request):
     d=await body(request); e=sound_input(d)

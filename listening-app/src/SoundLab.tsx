@@ -4,6 +4,7 @@ import {wordsFor,unitsFor,selectedRange,unitAt,highlightRuns,transitionMemory} f
 import {jumped} from './playback';
 import type {PlaybackSample} from './playback';
 import type {Word,Unit} from './transcript';
+import type {SavedSoundNote} from './SoundNoteHistory';
 
 type Clip={id:string;sourceId:string;start:number;end:number;text:string;sentenceStatus?:'edited'|'ai-reviewed'|'original'|'candidate'|'runtime-ai';words?:{text:string;start:number;end:number}[];chunks?:Unit[];paragraphId?:string};
 type KeyboardItem={clip:Clip;text:string;start:number;end:number;word?:Word};
@@ -37,7 +38,7 @@ function loadPlayer(){return loading??=new Promise<void>((resolve,reject)=>{
  const s=document.createElement('script');s.src='https://www.youtube.com/iframe_api';s.onerror=()=>{loading=undefined;reject(new Error('영상 플레이어 연결 실패. 페이지를 새로고침해주세요.'));};document.head.appendChild(s);
 });}
 
-function LoopPlayer({clip,start,end,playRequest,playKind,controls,onPosition,maxTime}:{clip:Clip;start:number;end:number;playRequest:number;playKind:PlayKind;controls:React.MutableRefObject<PlayerControls|null>;maxTime:number;onPosition:(time:number,playing:boolean,continuous:boolean,moved:boolean,rangeEnd:number)=>void}){
+function LoopPlayer({clip,start,end,playRequest,playKind,controls,onPosition,maxTime,currentUnitEnd}:{clip:Clip;start:number;end:number;playRequest:number;playKind:PlayKind;controls:React.MutableRefObject<PlayerControls|null>;maxTime:number;currentUnitEnd:(time:number)=>number;onPosition:(time:number,playing:boolean,continuous:boolean,moved:boolean,rangeEnd:number)=>void}){
  const slot=useRef<HTMLDivElement>(null),player=useRef<any>(null);
  const [ready,setReady]=useState(false),[playing,setPlaying]=useState(false),[loop,setLoop]=useState(false),[rate,setRate]=useState(1),[rates,setRates]=useState<number[]>([1]),[error,setError]=useState('');
  const [continuous,setContinuous]=useState(true);
@@ -57,6 +58,15 @@ function LoopPlayer({clip,start,end,playRequest,playKind,controls,onPosition,max
   clearTimeout(pending.current);pending.current=undefined;
   const p=player.current,s=state.current;if(!p||!ready||!valid)return;
   stopAt.current=null;if(kind!=='range'){setLoop(false);state.current.loop=false;}continuousRef.current=kind==='continuous';setContinuous(kind==='continuous');sample.current=null;active.current=kind!=='continuous';seeking.current=true;p.seekTo(s.start,true);p.setPlaybackRate(s.rate);p.playVideo();
+ }
+ function toggleMode(){
+  const p=player.current;if(!p||!ready)return;
+  const next=!continuousRef.current;
+  clearTimeout(pending.current);pending.current=undefined;setLoop(false);state.current.loop=false;
+  continuousRef.current=next;setContinuous(next);
+  stopAt.current=next?null:currentUnitEnd(p.getCurrentTime());
+  active.current=!next;seeking.current=false;sample.current=null;
+  p.playVideo();
  }
  controls.current={snapshot:()=>({time:player.current?.getCurrentTime?.()??start,playing:player.current?.getPlayerState?.()===1,continuous:continuousRef.current}),finishAt:(boundary)=>{
   clearTimeout(pending.current);pending.current=undefined;setLoop(false);state.current.loop=false;
@@ -105,16 +115,16 @@ function LoopPlayer({clip,start,end,playRequest,playKind,controls,onPosition,max
   <div className="lab-transport">
    <label><input type="checkbox" checked={loop} onChange={e=>{setLoop(e.target.checked);if(e.target.checked)begin();}}/> 반복 · 0.7초 쉬기</label>
    <select aria-label="재생 속도" value={rate} onChange={e=>{setRate(Number(e.target.value));player.current?.setPlaybackRate(Number(e.target.value));}}>{rates.map(r=><option key={r} value={r}>{r}배속</option>)}</select>
+   <button type="button" className={"lab-mode-badge"+(continuous?" is-continuous":"")} aria-pressed={continuous} disabled={!ready} onClick={toggleMode} title={continuous?"현재 구간 끝까지 듣고 멈추기":"현재 위치부터 계속 이어 듣기"}>{continuous?"계속 이어 듣기":loop?"구간 반복":"구간 한 번 듣기"}</button>
    <button className="primary-button" disabled={!ready||!valid} onClick={()=>playing||pending.current?stop():begin()}>{playing?<Pause size={17}/>:<Play size={17}/>} {playing?'멈추기':'선택 구간 듣기'}</button>
   </div>
-  <p className="lab-playback-mode">{continuous?'이어 듣기':'구간 연습'}</p>
   {error&&<p role="alert" className="inline-error">{error}</p>}
   {!valid&&<p role="alert" className="inline-error">오른쪽 자막에서 재생할 구간을 다시 선택해주세요.</p>}
   <a className="text-link" href={`https://www.youtube.com/watch?v=${clip.sourceId}&t=${Math.floor(start)}s`} target="_blank" rel="noreferrer">YouTube 원본 열기</a>
  </section>;
 }
 
-export default function SoundLab({sources,activeSource,ai}:{sources:Source[];activeSource?:string;ai:boolean}){
+export default function SoundLab({sources,activeSource,ai,initialNote}:{sources:Source[];activeSource?:string;ai:boolean;initialNote?:SavedSoundNote}){
  const [clips,setClips]=useState<Clip[]>([]),[notes,setNotes]=useState<Note[]>([]),[selected,setSelected]=useState(''),[source,setSource]=useState(activeSource||''),[loaded,setLoaded]=useState(false);
  const [start,setStart]=useState(0),[end,setEnd]=useState(1),[target,setTarget]=useState(''),[heard,setHeard]=useState(''),[feedback,setFeedback]=useState(''),[reheard,setReheard]=useState('');
  const [show,setShow]=useState(false),[search,setSearch]=useState(''),[error,setError]=useState(''),[status,setStatus]=useState(''),[busy,setBusy]=useState(false),[promptVisible,setPromptVisible]=useState(false);
@@ -128,23 +138,24 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
  const [focusTime,setFocusTime]=useState<number|null>(null),[previousRange,setPreviousRange]=useState<{start:number;end:number}|null>(null),[scrollRequest,setScrollRequest]=useState(0);
  const hasListeningPosition=useRef(false);
  const [guideOpen,setGuideOpen]=useState(()=>{try{return localStorage.getItem('listening-guide-seen')!=='1';}catch{return true;}});
+ const [setupOpen,setSetupOpen]=useState(()=>{try{return localStorage.getItem('listening-guide-seen')!=='1';}catch{return true;}});
  const learningStarted=useRef(false);
  function startLearning(){
   if(learningStarted.current)return;
-  learningStarted.current=true;setGuideOpen(false);
+  learningStarted.current=true;setGuideOpen(false);setSetupOpen(false);
   try{localStorage.setItem('listening-guide-seen','1');}catch{}
  }
  function toggleGuide(){setGuideOpen(v=>!v);try{localStorage.setItem('listening-guide-seen','1');}catch{}}
 
  const [followPlayback,setFollowPlayback]=useState(true);
  const captionScroll=useRef<HTMLDivElement>(null);
- const [sidePanel,setSidePanel]=useState<'captions'|'note'>('captions');
+ const [sidePanel,setSidePanel]=useState<'captions'|'note'>(initialNote?'note':'captions');
  const captionOffset=useRef(0);
  function switchPanel(next:'captions'|'note'){
-  if(next===sidePanel)return;
+  if(next===sidePanel){if(next==='captions')requestAnimationFrame(()=>captionScroll.current?.focus({preventScroll:true}));return;}
   if(next==='note'){captionOffset.current=captionScroll.current?.scrollTop??0;setFollowPlayback(false);}
   setFollowPlayback(false);setSidePanel(next);
-  if(next==='captions')requestAnimationFrame(()=>{if(captionScroll.current)captionScroll.current.scrollTop=captionOffset.current;});
+  if(next==='captions')requestAnimationFrame(()=>{if(captionScroll.current){captionScroll.current.scrollTop=captionOffset.current;captionScroll.current.focus({preventScroll:true});}});
  }
 
  const sourceClips=clips.filter(c=>c.sourceId===source);
@@ -152,22 +163,34 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
  const focusPoint=position.playing?position.time:focusTime;
  const focusClip=focusPoint===null?undefined:unitAt(displayedClips,focusPoint);
  const focusUnit=focusClip&&focusPoint!==null?(mode==='word'?unitAt(wordsFor(focusClip),focusPoint):unitAt(clipUnits(focusClip,mode),focusPoint)):undefined;
- useEffect(()=>{if(!followPlayback||sidePanel!=='captions')return;const frame=requestAnimationFrame(()=>{const list=captionScroll.current;const item=list?.querySelector<HTMLElement>('[data-continuity="true"]');if(list&&item){const a=list.getBoundingClientRect(),b=item.getBoundingClientRect();list.scrollTop+=b.top-a.top-list.clientHeight/3;}});return()=>cancelAnimationFrame(frame);},[mode,scrollRequest,focusClip?.id,focusUnit?.start,followPlayback,sidePanel]);
+ const focusSentence=focusPoint===null?undefined:unitAt(sourceClips,focusPoint);
+ const focusChild=focusSentence&&focusPoint!==null?unitAt(clipUnits(focusSentence,mode==='paragraph'?'sentence':'chunk'),focusPoint):undefined;
+ function revealCaption(list:HTMLElement,item:HTMLElement,point:number|null){
+  const child=point===null?undefined:[...item.querySelectorAll<HTMLElement>('[data-scroll-start]')].find(e=>Number(e.dataset.scrollStart)<=point&&point<Number(e.dataset.scrollEnd));
+  const target=child??item,a=list.getBoundingClientRect(),b=target.getBoundingClientRect();
+  // Preserve a visible sentence, even when its containing paragraph is taller than the list.
+  if(b.top<a.top||b.bottom>a.bottom){
+   if(b.height>list.clientHeight&&b.top>=a.top&&b.top<a.bottom)return;
+   list.scrollTop+=b.top-a.top-12;
+  }
+ }
+ useEffect(()=>{if(!followPlayback||sidePanel!=='captions')return;const frame=requestAnimationFrame(()=>{const list=captionScroll.current,item=list?.querySelector<HTMLElement>('[data-continuity="true"]');if(list&&item)revealCaption(list,item,focusPoint);});return()=>cancelAnimationFrame(frame);},[mode,scrollRequest,focusClip?.id,focusUnit?.start,focusChild?.start,followPlayback,sidePanel]);
  function changeMode(next:typeof mode,point=position.playing?position.time:focusTime??selection?.start??start){
   const oldClip=unitAt(displayedClips,point);
   const oldUnit=oldClip?unitAt(clipUnits(oldClip,mode),point):undefined;
   setPreviousRange(previous=>transitionMemory(mode,next,hasListeningPosition.current?oldUnit??null:null,previous));
-  setFollowPlayback(true);setFocusTime(point);setMode(next);setAnchor(null);setSearch('');setScrollRequest(v=>v+1);
+  setFollowPlayback(true);setFocusTime(point);setMode(next);setAnchor(null);setSearch('');setScrollRequest(v=>v+1);requestAnimationFrame(()=>captionScroll.current?.focus({preventScroll:true}));
  }
  const keyboardItems=displayedClips.filter(c=>c.text.toLowerCase().includes(search.toLowerCase())).flatMap<KeyboardItem>(c=>
   mode==='word'?wordsFor(c).map(word=>({clip:c,...word,word})):clipUnits(c,mode).map(u=>({clip:c,...u,word:undefined as Word|undefined})));
  const keyboardItem=keyboardTime===null?undefined:unitAt(keyboardItems,keyboardTime);
  useEffect(()=>{
-  if(!keyboardItem||sidePanel!=='captions')return;
-  const frame=requestAnimationFrame(()=>{const list=captionScroll.current,item=list?.querySelector<HTMLElement>('[data-keyboard="true"]');if(list&&item){const a=list.getBoundingClientRect(),b=item.getBoundingClientRect();if(b.top<a.top||b.bottom>a.bottom)list.scrollTop+=b.top-a.top-list.clientHeight/3;}});
+  if(!keyboardItem||followPlayback||sidePanel!=='captions')return;
+  const frame=requestAnimationFrame(()=>{const list=captionScroll.current,item=list?.querySelector<HTMLElement>('[data-keyboard="true"]');if(list&&item)revealCaption(list,item,keyboardTime);});
   return()=>cancelAnimationFrame(frame);
- },[keyboardItem?.start,mode,search]);
- function captionKey(e:React.KeyboardEvent<HTMLDivElement>){
+ },[keyboardItem?.start,mode,search,followPlayback]);
+ function captionKey(e:React.KeyboardEvent<HTMLElement>){
+  if(sidePanel!=='captions'||(e.target as HTMLElement).closest('input,textarea,select,[contenteditable="true"]'))return;
   if(e.altKey||e.ctrlKey||e.metaKey||e.nativeEvent.isComposing||!['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Enter'].includes(e.key))return;
   e.preventDefault();e.stopPropagation();if(busy||changing.current||!keyboardItems.length||e.repeat&&e.key==='Enter')return;
   const live=playerControls.current?.snapshot();
@@ -199,7 +222,7 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
  const activeUnit=activeCaption?clipUnits(activeCaption,mode).find(u=>position.time>=u.start&&position.time<u.end):undefined;
  const revision=sources.map(s=>s.id+':'+s.status+':'+s.revision).join('|');
  useEffect(()=>{let alive=true;request('').then(v=>{if(alive){setClips(v.clips);setNotes(v.notes);setLoaded(true);}}).catch(e=>{if(alive)setError(e.message);});return()=>{alive=false;};},[revision]);
- useEffect(()=>{let alive=true;request('').then(v=>{if(!alive)return;setClips(v.clips);setNotes(v.notes);setLoaded(true);const first=v.clips.find((c:Clip)=>c.sourceId===source);if(first){let n=v.notes.find((n:Note)=>n.exerciseId===first.id);try{const raw=localStorage.getItem('sound-draft:'+first.id);if(raw){n=JSON.parse(raw);setDirty(true);}}catch{}setSelected(first.id);setStart(n?.start??first.start);setEnd(n?.end??first.end);setTarget(n?.target??'');setHeard(n?.heard??'');setFeedback(n?.feedback??'');setReheard(n?.reheard??'');}}).catch(e=>{if(alive)setError(e.message);});return()=>{alive=false;};},[]);
+ useEffect(()=>{let alive=true;request('').then(v=>{if(!alive)return;setClips(v.clips);setNotes(v.notes);setLoaded(true);const first=initialNote?v.clips.find((c:Clip)=>c.id===initialNote.clipId):v.clips.find((c:Clip)=>c.sourceId===source);if(first){let n=initialNote??v.notes.find((n:Note)=>n.exerciseId===first.id);try{if(!initialNote){const raw=localStorage.getItem('sound-draft:'+first.id);if(raw){n=JSON.parse(raw);setDirty(true);}}}catch{}if(initialNote){setFocusTime(initialNote.start);setPosition({time:initialNote.start,playing:false});setSetupOpen(false);setGuideOpen(false);setSelection({start:initialNote.start,end:initialNote.end});}setSelected(first.id);setStart(n?.start??first.start);setEnd(n?.end??first.end);setTarget(n?.target??'');setHeard(n?.heard??'');setFeedback(n?.feedback??'');setReheard(n?.reheard??'');}}).catch(e=>{if(alive)setError(e.message);});return()=>{alive=false;};},[]);
  useEffect(()=>{if(!dirty)return;const warn=(e:BeforeUnloadEvent)=>e.preventDefault();window.addEventListener('beforeunload',warn);return()=>window.removeEventListener('beforeunload',warn);},[dirty]);
  const data={exerciseId:selected,start,end,target,heard,feedback,reheard};
  useEffect(()=>{if(!dirty||!selected)return;try{localStorage.setItem('sound-draft:'+selected,JSON.stringify(data));}catch{setError('임시 기록을 보관하지 못했어요. 메뉴 이동 전에 저장해주세요.');}},[selected,start,end,target,heard,feedback,reheard,dirty]);
@@ -217,7 +240,7 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
    const safeEnd=Math.min(maxTime,Math.round(Math.max(range.end,safeStart+.2)*1000)/1000);
    setStart(safeStart);setEnd(safeEnd);setTarget(text);setSelection({start:range.start,end:range.end});
    startLearning();setKeyboardTime(range.start);setFollowPlayback(true);hasListeningPosition.current=true;setFocusTime(range.start);setPreviousRange(null);setPosition({time:range.start,playing:false});setDirty(true);setStatus('선택한 부분을 재생합니다. 변경한 구간은 노트와 함께 저장할 수 있어요.');setError('');setAnchor(null);setPlayKind(kind);setPlayRequest(v=>v+1);
-  }catch(e){setError((e as Error).message);}finally{changing.current=false;setBusy(false);}
+  }catch(e){setError((e as Error).message);}finally{changing.current=false;setBusy(false);if(sidePanel==='captions')requestAnimationFrame(()=>captionScroll.current?.focus({preventScroll:true}));}
  }
  function wordClick(c:Clip,word:Word,kind:PlayKind='range'){
   if(!anchor){setAnchor({clip:c,word});return;}
@@ -236,16 +259,20 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
 이전 피드백: ${feedback||'없음'}
 다시 듣고 들린 소리: ${reheard||'아직 없음'}
 원음을 직접 확인하지 않았다면 들었다고 하지 말고, 자막과 내 한글 표기에 근거한 발음 가설임을 밝혀주세요. 한글 표기는 정확한 발음 기호가 아니라 내 청각 인상의 기록입니다. 어떤 단어 경계·연결·약화·강세 때문에 그렇게 들릴 수 있는지 가능한 설명 1~2개와 불확실성을 알려주세요. 필요하면 혀·입술·성대 움직임을 설명하고, 다음 재청취에서 확인할 소리 단서 하나를 주세요. 내 발음 점수나 실제 화자의 발음을 확정하지 말아주세요.`:'';
- return <div className="sound-lab"><div className="page-heading"><h1>내 귀에는 이렇게 들렸어요.</h1><p>짧게 반복하고, 들린 소리를 적고, 피드백을 참고해 다시 들어보세요.</p></div>
+ return <div className={'sound-lab '+(!setupOpen?'is-learning':'')}>
+  <div className="lab-session-bar"><span>{sources.find(s=>s.id===source)?.title||'소리 연습실'}</span><button type="button" className="secondary-button" aria-expanded={setupOpen} aria-controls="lab-setup" onClick={()=>setSetupOpen(v=>!v)}>{setupOpen?'학습 화면으로':'영상 설정'}</button></div>
+  <div id="lab-setup" hidden={!setupOpen}><div className="page-heading"><h1>내 귀에는 이렇게 들렸어요.</h1><p>짧게 반복하고, 들린 소리를 적고, 피드백을 참고해 다시 들어보세요.</p></div>
   <div className="lab-source"><label htmlFor="lab-source">연습할 영상</label><select id="lab-source" value={source} disabled={busy} onChange={async e=>{const next=e.target.value;try{if(dirty)await save();setSource(next);setKeyboardTime(null);hasListeningPosition.current=false;setFocusTime(null);setPreviousRange(null);setPosition({time:0,playing:false});setSelected('');setSearch('');setAnchor(null);setSelection(null);setPlayRequest(0);}catch(x){setError((x as Error).message);}}}><option value="">영상 선택</option>{sources.map(s=><option key={s.id} value={s.id}>{s.title}</option>)}</select></div>
-  {error&&<p className="inline-error" role="alert">{error}</p>}
+
   <p role="status">{sources.find(s=>s.id===source)?.message}</p>
   {source&&<button className="secondary-button" disabled={busy||['fetching','analyzing'].includes(sources.find(s=>s.id===source)?.status||'')} onClick={async()=>{try{const r=await fetch('/api/sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:`https://www.youtube.com/watch?v=${source}`})});if(!r.ok)throw new Error('준비 요청에 실패했어요.');setStatus('자막과 AI 분석 준비를 요청했어요.');}catch(e){setError((e as Error).message);}}}>자막·AI 분석 준비</button>}
+  </div>
+  {error&&<p className="inline-error" role="alert">{error}</p>}
   <div className="lab-layout"><div className="lab-listen">
-   {clip?<><LoopPlayer key={clip.sourceId} clip={clip} start={start} end={end} maxTime={maxTime} playRequest={playRequest} playKind={playKind} controls={playerControls} onPosition={(time,playing,continuous,moved,rangeEnd)=>{if(playing||moved){startLearning();hasListeningPosition.current=true;setFocusTime(continuous?time:Math.min(time,rangeEnd-.001));}if(moved){setKeyboardTime(null);setFollowPlayback(true);setPreviousRange(null);setSearch('');setAnchor(null);setScrollRequest(v=>v+1);}setPosition(p=>Math.abs(p.time-time)>.08||p.playing!==playing?{time,playing}:p);}}/><div className="lab-now"><b>{position.playing?'재생 중':'현재 위치'} {time(position.time)}</b><span>{activeUnit?.text||(hasListeningPosition.current?'이 위치에는 자막이 없습니다.':target||clip.text)}</span><small>단어·청크·문장 위치는 자막 시간 기반 추정</small></div>
+   {clip?<><LoopPlayer key={clip.sourceId} clip={clip} start={start} end={end} maxTime={maxTime} playRequest={playRequest} playKind={playKind} controls={playerControls} currentUnitEnd={point=>unitAt(displayedClips.flatMap<{start:number;end:number}>(c=>mode==='word'?wordsFor(c):clipUnits(c,mode)),point)?.end??end} onPosition={(time,playing,continuous,moved,rangeEnd)=>{if(playing||moved){startLearning();hasListeningPosition.current=true;setFocusTime(continuous?time:Math.min(time,rangeEnd-.001));}if(moved){setKeyboardTime(null);setFollowPlayback(true);setPreviousRange(null);setSearch('');setAnchor(null);setScrollRequest(v=>v+1);}setPosition(p=>Math.abs(p.time-time)>.08||p.playing!==playing?{time,playing}:p);}}/><div className="lab-now"><b>{position.playing?'재생 중':'현재 위치'} {time(position.time)}</b><span>{activeUnit?.text||(hasListeningPosition.current?'이 위치에는 자막이 없습니다.':target||clip.text)}</span><small>단어·청크·문장 위치는 자막 시간 기반 추정</small></div>
    </>:<div className="lab-empty"><h2>오른쪽 자막을 누르면 바로 재생됩니다.</h2><p>청크·문장·문단을 선택하거나, 시작 단어와 마지막 단어를 골라 들을 수 있어요.</p></div>}
   </div><div className="lab-side">
-   <div className="lab-side-tabs" role="tablist" aria-label="학습 패널">{([['captions','자막'],['note','소리 노트']] as const).map(([value,label])=><button key={value} type="button" role="tab" id={'tab-'+value} aria-selected={sidePanel===value} aria-controls={'panel-'+value} tabIndex={sidePanel===value?0:-1} onClick={()=>switchPanel(value)} onKeyDown={e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const next=e.key==='Home'?'captions':e.key==='End'?'note':sidePanel==='captions'?'note':'captions';switchPanel(next);document.getElementById('tab-'+next)?.focus();}}}>{label}</button>)}</div>
+   <div className="lab-side-tabs" role="tablist" aria-label="학습 패널">{([['captions','자막'],['note','소리 노트']] as const).map(([value,label])=><button key={value} type="button" role="tab" id={'tab-'+value} aria-selected={sidePanel===value} aria-controls={'panel-'+value} tabIndex={sidePanel===value?0:-1} onClick={()=>switchPanel(value)} onKeyDown={e=>{if(value==='captions'&&['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Enter'].includes(e.key)){captionKey(e);return;}if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const next=e.key==='Home'?'captions':e.key==='End'?'note':sidePanel==='captions'?'note':'captions';switchPanel(next);document.getElementById('tab-'+next)?.focus();}}}>{label}</button>)}</div>
    <section id="panel-captions" role="tabpanel" aria-labelledby="tab-captions" hidden={sidePanel!=='captions'} className="lab-clips lab-captions" aria-label="자막 선택">
    <div className="section-heading"><h2>자막을 눌러 바로 듣기</h2><span>{sourceClips.length}개 구간</span></div>
    <div className="lab-modes" aria-label="선택 단위">{([['chunk','청크'],['sentence','문장'],['paragraph','문단'],['word','단어 범위']] as const).map(([value,label])=><button key={value} aria-pressed={mode===value} disabled={busy} onClick={()=>changeMode(value)}>{label}</button>)}</div>
@@ -279,7 +306,7 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
       const content=children.map(({clip:childClip,unit:child},j)=>{
        const now=current&&position.time>=child.start&&position.time<child.end;
        const chosen=!!selection&&Math.abs(child.start-selection.start)<.01&&Math.abs(child.end-selection.end)<.01;
-       return <React.Fragment key={j}>{j>0?' ':''}<button type="button" className="lab-inline-unit" disabled={busy} aria-label={`${mode==='paragraph'?'문장':'청크'} 재생: ${child.text}`} aria-current={now?'true':undefined} aria-pressed={chosen} onClick={()=>void choose(childClip,child,child.text)}><HighlightedText words={wordsFor(childClip).filter(w=>w.end>child.start&&w.start<child.end)} range={whole?null:memory}/></button></React.Fragment>;
+       return <React.Fragment key={j}>{j>0?' ':''}<button type="button" className="lab-inline-unit" data-scroll-start={child.start} data-scroll-end={child.end} disabled={busy} aria-label={`${mode==='paragraph'?'문장':'청크'} 재생: ${child.text}`} aria-current={now?'true':undefined} aria-pressed={chosen} onClick={()=>void choose(childClip,child,child.text)}><HighlightedText words={wordsFor(childClip).filter(w=>w.end>child.start&&w.start<child.end)} range={whole?null:memory}/></button></React.Fragment>;
       });
       return <div key={i} data-keyboard={keyboardItem?.clip.id===c.id&&keyboardItem.start===u.start?'true':undefined} data-continuity={focused?'true':undefined} className={'lab-context '+(focused?'continuity-focus':'')}>
        {whole?<mark className="continuity-memory">{content}</mark>:content}

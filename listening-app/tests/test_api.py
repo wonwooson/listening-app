@@ -62,6 +62,29 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(self.client.post('/api/sound-lab/notes',json={**note,**bad}).status_code,400)
         self.assertEqual(self.client.get('/api/sound-lab').json()['notes'][-1]['heard'],note['heard'])
 
+    def test_history_attempts_keeps_more_than_recent_100(self):
+        records=[{'id':str(i),'at':f'2026-01-{i%28+1:02d}T12:00:00+00:00','note':f'note {i}'} for i in range(125)]
+        with patch.object(self.server.store,'all',return_value=records):
+            response=self.client.get('/api/history/attempts')
+        self.assertEqual(response.status_code,200)
+        rows=response.json()
+        self.assertEqual(len(rows),125)
+        self.assertEqual({r['id'] for r in rows},{r['id'] for r in records})
+        self.assertEqual([r['at'] for r in rows],sorted((r['at'] for r in records),reverse=True))
+
+    def test_sound_history_keeps_legacy_and_unlinked_notes(self):
+        notes=[{'recordType':'sound-note','exerciseId':id,'sourceId':'v','start':start,'end':start+1,'heard':id,'at':date}
+               for id,start,date in [('old-a',2,'2026-01-01'),('old-b',3,'2026-01-03'),('missing',99,'2026-01-02')]]
+        clips=[{'id':'new','sourceId':'v','start':0,'end':10}]
+        with patch.object(self.server,'sound_clips',return_value=clips), patch.object(self.server.store,'all',side_effect=lambda kind:notes if kind=='preference' else [{'id':'v','title':'Video'}]):
+            response=self.client.get('/api/sound-lab/history')
+        self.assertEqual(response.status_code,200)
+        rows=response.json()
+        self.assertEqual([n['exerciseId'] for n in rows],['old-b','missing','old-a'])
+        self.assertEqual([n['clipId'] for n in rows],['new',None,'new'])
+        self.assertEqual(rows[0]['heard'],'old-b')
+        self.assertEqual(rows[0]['title'],'Video')
+
     def test_sound_feedback_requires_input_and_model(self):
         clip=self.client.get('/api/sound-lab').json()['clips'][0]
         data={'exerciseId':clip['id'],'start':clip['start'],'end':clip['end'],'heard':''}
