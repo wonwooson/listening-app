@@ -2,14 +2,16 @@ import React,{useEffect,useRef,useState} from 'react';
 import {Play,Pause,Copy,Save} from 'lucide-react';
 import {wordsFor,unitsFor,selectedRange,unitAt,highlightRuns,transitionMemory} from './transcript';
 import {jumped} from './playback';
+import {swipeMode} from './mobileGestures';
 import type {PlaybackSample} from './playback';
 import type {Word,Unit} from './transcript';
 import type {SavedSoundNote} from './SoundNoteHistory';
 
 type Clip={id:string;sourceId:string;start:number;end:number;text:string;sentenceStatus?:'edited'|'ai-reviewed'|'original'|'candidate'|'runtime-ai';words?:{text:string;start:number;end:number}[];chunks?:Unit[];paragraphId?:string};
 type KeyboardItem={clip:Clip;text:string;start:number;end:number;word?:Word};
-type PlayKind='range'|'once'|'continuous';
-type PlayerControls={snapshot:()=>{time:number;playing:boolean;continuous:boolean};finishAt:(end:number)=>void};
+type PlayKind='range'|'once'|'continuous'|'loop';
+type TransportMode='stopped'|'loop'|'continuous'|'once';
+type PlayerControls={setMode:(mode:'loop'|'continuous')=>void;stop:()=>void;engaged:()=>boolean;snapshot:()=>{time:number;playing:boolean;continuous:boolean};finishAt:(end:number)=>void};
 type Note={exerciseId:string;start:number;end:number;heard:string;target:string;feedback:string;reheard:string};
 type Source={id:string;title:string;status?:string;message?:string;revision?:string};
 function clipUnits(c:Clip,mode:'chunk'|'sentence'|'paragraph'|'word'):Unit[]{
@@ -38,7 +40,7 @@ function loadPlayer(){return loading??=new Promise<void>((resolve,reject)=>{
  const s=document.createElement('script');s.src='https://www.youtube.com/iframe_api';s.onerror=()=>{loading=undefined;reject(new Error('영상 플레이어 연결 실패. 페이지를 새로고침해주세요.'));};document.head.appendChild(s);
 });}
 
-function LoopPlayer({clip,start,end,playRequest,playKind,controls,onPosition,maxTime,currentUnitEnd}:{clip:Clip;start:number;end:number;playRequest:number;playKind:PlayKind;controls:React.MutableRefObject<PlayerControls|null>;maxTime:number;currentUnitEnd:(time:number)=>number;onPosition:(time:number,playing:boolean,continuous:boolean,moved:boolean,rangeEnd:number)=>void}){
+function LoopPlayer({clip,start,end,playRequest,playKind,controls,onPosition,maxTime,currentUnitEnd}:{clip:Clip;start:number;end:number;playRequest:number;playKind:PlayKind;controls:React.MutableRefObject<PlayerControls|null>;maxTime:number;currentUnitEnd:(time:number)=>number;onPosition:(time:number,playing:boolean,continuous:boolean,moved:boolean,rangeEnd:number,transport:TransportMode)=>void}){
  const slot=useRef<HTMLDivElement>(null),player=useRef<any>(null);
  const [ready,setReady]=useState(false),[playing,setPlaying]=useState(false),[loop,setLoop]=useState(false),[rate,setRate]=useState(1),[rates,setRates]=useState<number[]>([1]),[error,setError]=useState('');
  const [continuous,setContinuous]=useState(true);
@@ -57,7 +59,7 @@ function LoopPlayer({clip,start,end,playRequest,playKind,controls,onPosition,max
  function begin(kind:PlayKind='range'){
   clearTimeout(pending.current);pending.current=undefined;
   const p=player.current,s=state.current;if(!p||!ready||!valid)return;
-  stopAt.current=null;if(kind!=='range'){setLoop(false);state.current.loop=false;}continuousRef.current=kind==='continuous';setContinuous(kind==='continuous');sample.current=null;active.current=kind!=='continuous';seeking.current=true;p.seekTo(s.start,true);p.setPlaybackRate(s.rate);p.playVideo();
+  stopAt.current=null;if(kind!=='range'){setLoop(kind==='loop');state.current.loop=kind==='loop';}continuousRef.current=kind==='continuous';setContinuous(kind==='continuous');sample.current=null;active.current=kind!=='continuous';seeking.current=true;p.seekTo(s.start,true);p.setPlaybackRate(s.rate);p.playVideo();
  }
  function toggleMode(){
   const p=player.current;if(!p||!ready)return;
@@ -68,7 +70,14 @@ function LoopPlayer({clip,start,end,playRequest,playKind,controls,onPosition,max
   active.current=!next;seeking.current=false;sample.current=null;
   p.playVideo();
  }
- controls.current={snapshot:()=>({time:player.current?.getCurrentTime?.()??start,playing:player.current?.getPlayerState?.()===1,continuous:continuousRef.current}),finishAt:(boundary)=>{
+ controls.current={setMode:mode=>{
+  const p=player.current;if(!p||!ready)return;
+  if(mode==='loop'){begin('loop');return;}
+  clearTimeout(pending.current);pending.current=undefined;
+  stopAt.current=null;active.current=false;seeking.current=false;sample.current=null;
+  setLoop(false);state.current.loop=false;continuousRef.current=true;setContinuous(true);
+  p.playVideo();
+ },stop,engaged:()=>seeking.current||active.current||!!pending.current||[1,3].includes(player.current?.getPlayerState?.()),snapshot:()=>({time:player.current?.getCurrentTime?.()??start,playing:player.current?.getPlayerState?.()===1,continuous:continuousRef.current}),finishAt:(boundary)=>{
   clearTimeout(pending.current);pending.current=undefined;setLoop(false);state.current.loop=false;
   stopAt.current=boundary;active.current=true;seeking.current=false;continuousRef.current=false;setContinuous(false);
  }};
@@ -96,7 +105,7 @@ function LoopPlayer({clip,start,end,playRequest,playKind,controls,onPosition,max
    const moved=!seeking.current&&jumped(sample.current,now);
    if(moved)explore();
    if(!seeking.current)sample.current=now;
-   positionCallback.current(now.time,now.playing,continuousRef.current,moved,stopAt.current??s.end);
+   positionCallback.current(now.time,now.playing,continuousRef.current,moved,stopAt.current??s.end,(seeking.current||active.current||pending.current||[1,3].includes(p.getPlayerState()))?(continuousRef.current?'continuous':s.loop?'loop':'once'):'stopped');
    if(seeking.current){if(now.time<s.end){seeking.current=false;sample.current=now;}else return;}
    if(!active.current||pending.current)return;
    if((p.getPlayerState()===1&&p.getCurrentTime()>=(stopAt.current??s.end))||p.getPlayerState()===0){
@@ -125,12 +134,17 @@ function LoopPlayer({clip,start,end,playRequest,playKind,controls,onPosition,max
 }
 
 export default function SoundLab({sources,activeSource,ai,initialNote}:{sources:Source[];activeSource?:string;ai:boolean;initialNote?:SavedSoundNote}){
+ const [mobile,setMobile]=useState(()=>matchMedia('(max-width: 850px) and (pointer: coarse)').matches);
+ useEffect(()=>{const media=matchMedia('(max-width: 850px) and (pointer: coarse)');const update=()=>setMobile(media.matches);media.addEventListener('change',update);return()=>media.removeEventListener('change',update);},[]);
+ const touchStart=useRef<{x:number;y:number}|null>(null),suppressTap=useRef(0);
+ const mobileTarget=useRef('');
  const [clips,setClips]=useState<Clip[]>([]),[notes,setNotes]=useState<Note[]>([]),[selected,setSelected]=useState(''),[source,setSource]=useState(activeSource||''),[loaded,setLoaded]=useState(false);
  const [start,setStart]=useState(0),[end,setEnd]=useState(1),[target,setTarget]=useState(''),[heard,setHeard]=useState(''),[feedback,setFeedback]=useState(''),[reheard,setReheard]=useState('');
  const [show,setShow]=useState(false),[search,setSearch]=useState(''),[error,setError]=useState(''),[status,setStatus]=useState(''),[busy,setBusy]=useState(false),[promptVisible,setPromptVisible]=useState(false);
  const [dirty,setDirty]=useState(false);
  const [mode,setMode]=useState<'chunk'|'sentence'|'paragraph'|'word'>('sentence'),[playRequest,setPlayRequest]=useState(0);
  const [playKind,setPlayKind]=useState<PlayKind>('range');
+ const [transport,setTransport]=useState<TransportMode>('stopped');
  const playerControls=useRef<PlayerControls|null>(null);
  const [keyboardTime,setKeyboardTime]=useState<number|null>(null);
  const [position,setPosition]=useState({time:0,playing:false}),[anchor,setAnchor]=useState<{clip:Clip;word:Word}|null>(null);
@@ -138,7 +152,7 @@ export default function SoundLab({sources,activeSource,ai,initialNote}:{sources:
  const [focusTime,setFocusTime]=useState<number|null>(null),[previousRange,setPreviousRange]=useState<{start:number;end:number}|null>(null),[scrollRequest,setScrollRequest]=useState(0);
  const hasListeningPosition=useRef(false);
  const [guideOpen,setGuideOpen]=useState(()=>{try{return localStorage.getItem('listening-guide-seen')!=='1';}catch{return true;}});
- const [setupOpen,setSetupOpen]=useState(()=>{try{return localStorage.getItem('listening-guide-seen')!=='1';}catch{return true;}});
+ const [setupOpen,setSetupOpen]=useState(()=>{if(matchMedia('(max-width: 850px) and (pointer: coarse)').matches)return false;try{return localStorage.getItem('listening-guide-seen')!=='1';}catch{return true;}});
  const learningStarted=useRef(false);
  function startLearning(){
   if(learningStarted.current)return;
@@ -242,12 +256,30 @@ export default function SoundLab({sources,activeSource,ai,initialNote}:{sources:
    startLearning();setKeyboardTime(range.start);setFollowPlayback(true);hasListeningPosition.current=true;setFocusTime(range.start);setPreviousRange(null);setPosition({time:range.start,playing:false});setDirty(true);setStatus('선택한 부분을 재생합니다. 변경한 구간은 노트와 함께 저장할 수 있어요.');setError('');setAnchor(null);setPlayKind(kind);setPlayRequest(v=>v+1);
   }catch(e){setError((e as Error).message);}finally{changing.current=false;setBusy(false);if(sidePanel==='captions')requestAnimationFrame(()=>captionScroll.current?.focus({preventScroll:true}));}
  }
+ function touchPlay(c:Clip,range={start:c.start,end:c.end},text=c.text,kind:PlayKind='loop'){
+  if(!mobile)return choose(c,range,text);
+  const key=`${c.sourceId}:${range.start}:${range.end}:${kind}`;
+  if(mobileTarget.current===key&&playerControls.current?.engaged()){
+   playerControls.current.stop();setAnchor(null);return;
+  }
+  if(changing.current)return;
+  mobileTarget.current=key;return choose(c,range,text,kind);
+ }
+ function finishSwipe(e:React.TouchEvent){
+  const origin=touchStart.current;touchStart.current=null;
+  if(!mobile||!origin||!e.changedTouches.length)return;
+  const dx=e.changedTouches[0].clientX-origin.x,dy=e.changedTouches[0].clientY-origin.y;
+  const next=swipeMode(mode,dx,dy);if(next===null)return;
+  suppressTap.current=Date.now()+700;
+  if(!busy)changeMode(next);
+ }
  function wordClick(c:Clip,word:Word,kind:PlayKind='range'){
+  if(mobile&&kind==='range'&&!anchor&&transport==='loop'&&selection&&word.start>=selection.start&&word.end<=selection.end&&playerControls.current?.engaged()){playerControls.current.stop();return;}
   if(!anchor){setAnchor({clip:c,word});return;}
   const range=selectedRange(anchor.word,word);
   const first=anchor.word.start<=word.start?anchor.clip:c;
   const text=first.id===c.id&&anchor.clip.id===c.id?wordsFor(c).filter(w=>w.start>=range.start&&w.end<=range.end).map(w=>w.text).join(' '):sourceClips.filter(c=>c.end>range.start&&c.start<range.end).flatMap(c=>wordsFor(c).filter(w=>w.start>=range.start&&w.end<=range.end).map(w=>w.text)).join(' ');
-  return choose(first,range,text,kind);
+  return mobile&&kind==='range'?touchPlay(first,range,text):choose(first,range,text,kind);
  }
  function edit(action:()=>void){action();setDirty(true);setStatus('아직 저장하지 않은 변경이 있어요.');}
  const prompt=clip?`영어 듣기 피드백을 한국어로 해주세요. 문법·번역보다 소리를 식별하는 연습이 목적입니다.
@@ -259,8 +291,8 @@ export default function SoundLab({sources,activeSource,ai,initialNote}:{sources:
 이전 피드백: ${feedback||'없음'}
 다시 듣고 들린 소리: ${reheard||'아직 없음'}
 원음을 직접 확인하지 않았다면 들었다고 하지 말고, 자막과 내 한글 표기에 근거한 발음 가설임을 밝혀주세요. 한글 표기는 정확한 발음 기호가 아니라 내 청각 인상의 기록입니다. 어떤 단어 경계·연결·약화·강세 때문에 그렇게 들릴 수 있는지 가능한 설명 1~2개와 불확실성을 알려주세요. 필요하면 혀·입술·성대 움직임을 설명하고, 다음 재청취에서 확인할 소리 단서 하나를 주세요. 내 발음 점수나 실제 화자의 발음을 확정하지 말아주세요.`:'';
- return <div className={'sound-lab '+(!setupOpen?'is-learning':'')}>
-  <div className="lab-session-bar"><span>{sources.find(s=>s.id===source)?.title||'소리 연습실'}</span><button type="button" className="secondary-button" aria-expanded={setupOpen} aria-controls="lab-setup" onClick={()=>setSetupOpen(v=>!v)}>{setupOpen?'학습 화면으로':'영상 설정'}</button></div>
+ return <div className={'sound-lab '+(!setupOpen?'is-learning':'')+(mobile?' is-mobile':'')}>
+  <div className="lab-session-bar"><span>{sources.find(s=>s.id===source)?.title||'소리 연습실'}</span><button type="button" className="secondary-button" aria-expanded={setupOpen} aria-controls="lab-setup" onClick={()=>setSetupOpen(v=>!v)}>{setupOpen?'학습 화면으로':mobile?'설정':'영상 설정'}</button></div>
   <div id="lab-setup" hidden={!setupOpen}><div className="page-heading"><h1>내 귀에는 이렇게 들렸어요.</h1><p>짧게 반복하고, 들린 소리를 적고, 피드백을 참고해 다시 들어보세요.</p></div>
   <div className="lab-source"><label htmlFor="lab-source">연습할 영상</label><select id="lab-source" value={source} disabled={busy} onChange={async e=>{const next=e.target.value;try{if(dirty)await save();setSource(next);setKeyboardTime(null);hasListeningPosition.current=false;setFocusTime(null);setPreviousRange(null);setPosition({time:0,playing:false});setSelected('');setSearch('');setAnchor(null);setSelection(null);setPlayRequest(0);}catch(x){setError((x as Error).message);}}}><option value="">영상 선택</option>{sources.map(s=><option key={s.id} value={s.id}>{s.title}</option>)}</select></div>
 
@@ -269,12 +301,14 @@ export default function SoundLab({sources,activeSource,ai,initialNote}:{sources:
   </div>
   {error&&<p className="inline-error" role="alert">{error}</p>}
   <div className="lab-layout"><div className="lab-listen">
-   {clip?<><LoopPlayer key={clip.sourceId} clip={clip} start={start} end={end} maxTime={maxTime} playRequest={playRequest} playKind={playKind} controls={playerControls} currentUnitEnd={point=>unitAt(displayedClips.flatMap<{start:number;end:number}>(c=>mode==='word'?wordsFor(c):clipUnits(c,mode)),point)?.end??end} onPosition={(time,playing,continuous,moved,rangeEnd)=>{if(playing||moved){startLearning();hasListeningPosition.current=true;setFocusTime(continuous?time:Math.min(time,rangeEnd-.001));}if(moved){setKeyboardTime(null);setFollowPlayback(true);setPreviousRange(null);setSearch('');setAnchor(null);setScrollRequest(v=>v+1);}setPosition(p=>Math.abs(p.time-time)>.08||p.playing!==playing?{time,playing}:p);}}/><div className="lab-now"><b>{position.playing?'재생 중':'현재 위치'} {time(position.time)}</b><span>{activeUnit?.text||(hasListeningPosition.current?'이 위치에는 자막이 없습니다.':target||clip.text)}</span><small>단어·청크·문장 위치는 자막 시간 기반 추정</small></div>
+   {clip?<><LoopPlayer key={clip.sourceId} clip={clip} start={start} end={end} maxTime={maxTime} playRequest={playRequest} playKind={playKind} controls={playerControls} currentUnitEnd={point=>unitAt(displayedClips.flatMap<{start:number;end:number}>(c=>mode==='word'?wordsFor(c):clipUnits(c,mode)),point)?.end??end} onPosition={(time,playing,continuous,moved,rangeEnd,transport)=>{setTransport(old=>old===transport?old:transport);if(playing||moved){startLearning();hasListeningPosition.current=true;setFocusTime(continuous?time:Math.min(time,rangeEnd-.001));}if(moved){setKeyboardTime(null);setFollowPlayback(true);setPreviousRange(null);setSearch('');setAnchor(null);setScrollRequest(v=>v+1);}setPosition(p=>Math.abs(p.time-time)>.08||p.playing!==playing?{time,playing}:p);}}/><div className="lab-now"><b>{position.playing?'재생 중':'현재 위치'} {time(position.time)}</b><span>{activeUnit?.text||(hasListeningPosition.current?'이 위치에는 자막이 없습니다.':target||clip.text)}</span><small>단어·청크·문장 위치는 자막 시간 기반 추정</small></div>
    </>:<div className="lab-empty"><h2>오른쪽 자막을 누르면 바로 재생됩니다.</h2><p>청크·문장·문단을 선택하거나, 시작 단어와 마지막 단어를 골라 들을 수 있어요.</p></div>}
   </div><div className="lab-side">
    <div className="lab-side-tabs" role="tablist" aria-label="학습 패널">{([['captions','자막'],['note','소리 노트']] as const).map(([value,label])=><button key={value} type="button" role="tab" id={'tab-'+value} aria-selected={sidePanel===value} aria-controls={'panel-'+value} tabIndex={sidePanel===value?0:-1} onClick={()=>switchPanel(value)} onKeyDown={e=>{if(value==='captions'&&['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Enter'].includes(e.key)){captionKey(e);return;}if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const next=e.key==='Home'?'captions':e.key==='End'?'note':sidePanel==='captions'?'note':'captions';switchPanel(next);document.getElementById('tab-'+next)?.focus();}}}>{label}</button>)}</div>
    <section id="panel-captions" role="tabpanel" aria-labelledby="tab-captions" hidden={sidePanel!=='captions'} className="lab-clips lab-captions" aria-label="자막 선택">
    <div className="section-heading"><h2>자막을 눌러 바로 듣기</h2><span>{sourceClips.length}개 구간</span></div>
+   {mobile&&<div className="lab-mobile-status"><div className="lab-mobile-mode-row"><span>{({chunk:'청크',sentence:'문장',paragraph:'문단',word:'단어 범위'})[mode]}</span><div className="lab-mobile-playback" role="group" aria-label="듣기 방식">{([['stopped','멈춤'],['loop','반복 듣기'],['continuous','계속 이어 듣기']] as const).map(([value,label])=><button type="button" key={value} aria-pressed={transport===value} disabled={!clip||busy} onClick={()=>{if(value==='stopped'){playerControls.current?.stop();setTransport('stopped');}else{if(clip)mobileTarget.current=`${clip.sourceId}:${start}:${end}:${value}`;playerControls.current?.setMode(value);}setAnchor(null);}}>{label}</button>)}</div></div>{transport==='once'&&<small role="status">구간 한 번 듣기</small>}<small>← 청크 · 문장 · 문단 · 단어 범위 →</small></div>}
+   {mobile&&setupOpen&&<p>자막 틀의 여백·시간은 이어 듣기, 내부 구절은 반복 듣기입니다. 같은 곳을 다시 누르면 멈춥니다. 좌우로 밀어 보기를 바꾸세요. 단어 범위는 시작·마지막 단어를 선택합니다. 선택 범위의 단어를 다시 누르면 반복을 멈춥니다.</p>}
    <div className="lab-modes" aria-label="선택 단위">{([['chunk','청크'],['sentence','문장'],['paragraph','문단'],['word','단어 범위']] as const).map(([value,label])=><button key={value} aria-pressed={mode===value} disabled={busy} onClick={()=>changeMode(value)}>{label}</button>)}</div>
    <div className="lab-caption-actions"><button type="button" onClick={()=>changeMode(mode)}>현재 위치로 돌아가기</button><button type="button" aria-expanded={guideOpen} aria-controls="lab-guide" onClick={toggleGuide}>사용 안내 {guideOpen?'접기':'보기'}</button></div>
    {guideOpen&&<div id="lab-guide" className="lab-guide">
@@ -287,10 +321,10 @@ export default function SoundLab({sources,activeSource,ai,initialNote}:{sources:
    </div>}
    {anchor&&<div className="lab-anchor" role="status">시작: “{anchor.word.text}” · 마지막 단어를 선택하세요.<button onClick={()=>setAnchor(null)}>선택 취소</button></div>}
    <input aria-label="자막 검색" placeholder="찾고 싶은 영어 단어로 검색" value={search} onChange={e=>{setSearch(e.target.value);setKeyboardTime(null);}}/>
-   <div className="lab-caption-scroll" ref={captionScroll} tabIndex={0} role="region" aria-label="키보드 자막 탐색" onKeyDown={captionKey} onWheel={()=>setFollowPlayback(false)} onTouchMove={()=>setFollowPlayback(false)} onPointerDown={()=>setFollowPlayback(false)}>{displayedClips.filter(c=>c.text.toLowerCase().includes(search.toLowerCase())).map(c=>{
+   <div className="lab-caption-scroll" ref={captionScroll} tabIndex={0} role="region" aria-label="키보드 자막 탐색" onKeyDown={captionKey} onWheel={()=>setFollowPlayback(false)} onTouchMove={()=>setFollowPlayback(false)} onTouchStart={e=>{touchStart.current=e.touches.length===1?{x:e.touches[0].clientX,y:e.touches[0].clientY}:null;}} onTouchEnd={finishSwipe} onTouchCancel={()=>{touchStart.current=null;}} onClickCapture={e=>{if(Date.now()<suppressTap.current){e.preventDefault();e.stopPropagation();}}} onPointerDown={()=>setFollowPlayback(false)}>{displayedClips.filter(c=>c.text.toLowerCase().includes(search.toLowerCase())).map(c=>{
     const words=wordsFor(c);const current=position.playing&&position.time>=c.start&&position.time<c.end;
-    return <article key={c.id} className={'lab-caption '+(c.id===selected?'selected ':'')+(current?'is-current':'')}>
-     <button className="lab-caption-time" disabled={busy} onClick={()=>void choose(c)} aria-label={`${time(c.start)} 자막 전체 재생`}>{time(c.start)} – {time(c.end)} <Play size={12}/>{notes.some(n=>n.exerciseId===c.id)&&<small>기록 있음</small>}</button>
+    return <article key={c.id} onClick={e=>{if(mobile&&!(e.target as HTMLElement).closest('button'))void touchPlay(c,undefined,undefined,'continuous');}} className={'lab-caption '+(c.id===selected?'selected ':'')+(current?'is-current':'')}>
+     <button className="lab-caption-time" disabled={busy} onClick={()=>void (mobile?touchPlay(c,undefined,undefined,'continuous'):choose(c))} aria-label={`${time(c.start)} 자막 전체 재생`}>{time(c.start)} – {time(c.end)} <Play size={12}/>{notes.some(n=>n.exerciseId===c.id)&&<small>기록 있음</small>}</button>
      <div className="lab-units" lang="en">{mode==='word'?words.map(w=>{
       const now=current&&position.time>=w.start&&position.time<w.end;
       const chosen=selection&&w.start>=selection.start&&w.end<=selection.end;
@@ -298,7 +332,7 @@ export default function SoundLab({sources,activeSource,ai,initialNote}:{sources:
      }):clipUnits(c,mode).map((u,i)=>{
       const focused=c.id===focusClip?.id&&u.start===focusUnit?.start&&u.end===focusUnit?.end;
       const memory=previousRange&&previousRange.start>=u.start-.001&&previousRange.end<=u.end+.001?previousRange:null;
-      if(mode==='chunk')return <button key={i} data-keyboard={keyboardItem?.clip.id===c.id&&keyboardItem.start===u.start?'true':undefined} data-continuity={focused?'true':undefined} disabled={busy} className={focused?'continuity-focus':''} aria-current={current&&position.time>=u.start&&position.time<u.end?'true':undefined} onClick={()=>void choose(c,u,u.text)}><HighlightedText words={words.filter(w=>w.end>u.start&&w.start<u.end)} range={memory}/></button>;
+      if(mode==='chunk')return <button key={i} data-keyboard={keyboardItem?.clip.id===c.id&&keyboardItem.start===u.start?'true':undefined} data-continuity={focused?'true':undefined} disabled={busy} className={focused?'continuity-focus':''} aria-current={current&&position.time>=u.start&&position.time<u.end?'true':undefined} onClick={()=>void touchPlay(c,u,u.text)}><HighlightedText words={words.filter(w=>w.end>u.start&&w.start<u.end)} range={memory}/></button>;
       const children=mode==='paragraph'
        ?sourceClips.filter(sentence=>sentence.paragraphId===c.paragraphId).map(sentence=>({clip:sentence,unit:clipUnits(sentence,'sentence')[0]}))
        :clipUnits(c,'chunk').map(unit=>({clip:c,unit}));
@@ -306,7 +340,7 @@ export default function SoundLab({sources,activeSource,ai,initialNote}:{sources:
       const content=children.map(({clip:childClip,unit:child},j)=>{
        const now=current&&position.time>=child.start&&position.time<child.end;
        const chosen=!!selection&&Math.abs(child.start-selection.start)<.01&&Math.abs(child.end-selection.end)<.01;
-       return <React.Fragment key={j}>{j>0?' ':''}<button type="button" className="lab-inline-unit" data-scroll-start={child.start} data-scroll-end={child.end} disabled={busy} aria-label={`${mode==='paragraph'?'문장':'청크'} 재생: ${child.text}`} aria-current={now?'true':undefined} aria-pressed={chosen} onClick={()=>void choose(childClip,child,child.text)}><HighlightedText words={wordsFor(childClip).filter(w=>w.end>child.start&&w.start<child.end)} range={whole?null:memory}/></button></React.Fragment>;
+       return <React.Fragment key={j}>{j>0?' ':''}<button type="button" className="lab-inline-unit" data-scroll-start={child.start} data-scroll-end={child.end} disabled={busy} aria-label={`${mode==='paragraph'?'문장':'청크'} 재생: ${child.text}`} aria-current={now?'true':undefined} aria-pressed={chosen} onClick={()=>void touchPlay(childClip,child,child.text)}><HighlightedText words={wordsFor(childClip).filter(w=>w.end>child.start&&w.start<child.end)} range={whole?null:memory}/></button></React.Fragment>;
       });
       return <div key={i} data-keyboard={keyboardItem?.clip.id===c.id&&keyboardItem.start===u.start?'true':undefined} data-continuity={focused?'true':undefined} className={'lab-context '+(focused?'continuity-focus':'')}>
        {whole?<mark className="continuity-memory">{content}</mark>:content}
