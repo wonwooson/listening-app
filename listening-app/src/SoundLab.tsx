@@ -1,6 +1,6 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {Play,Pause,RotateCcw,Copy,Save} from 'lucide-react';
-import {wordsFor,unitsFor,selectedRange} from './transcript';
+import {wordsFor,unitsFor,selectedRange,unitAt,highlightRuns,transitionMemory} from './transcript';
 import type {Word,Unit} from './transcript';
 
 type Clip={id:string;sourceId:string;start:number;end:number;text:string;sentenceStatus?:'edited'|'ai-reviewed'|'original'|'candidate'|'runtime-ai';words?:{text:string;start:number;end:number}[];chunks?:Unit[];paragraphId?:string};
@@ -15,6 +15,9 @@ function paragraphClips(clips:Clip[]):Clip[]{
  const groups=new Map<string,Clip[]>();
  for(const c of clips){if(!c.paragraphId)continue;const group=groups.get(c.paragraphId)||[];group.push(c);groups.set(c.paragraphId,group);}
  return [...groups.values()].map(g=>({...g[0],end:g[g.length-1].end,text:g.map(c=>c.text).join(' '),words:g.flatMap(c=>c.words||[])}));
+}
+function HighlightedText({words,range}:{words:Word[];range:{start:number;end:number}|null}){
+ return <>{highlightRuns(words,range).map((run,i)=><React.Fragment key={i}>{i>0?' ':''}{run.highlighted?<mark className="continuity-memory">{run.text}</mark>:run.text}</React.Fragment>)}</>;
 }
 async function request(path:string,data?:unknown){
  const r=await fetch('/api/sound-lab'+path,{cache:'no-store',method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});
@@ -91,8 +94,22 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
  const [mode,setMode]=useState<'chunk'|'sentence'|'paragraph'|'word'>('sentence'),[playRequest,setPlayRequest]=useState(0);
  const [position,setPosition]=useState({time:0,playing:false}),[anchor,setAnchor]=useState<{clip:Clip;word:Word}|null>(null);
  const [selection,setSelection]=useState<{start:number;end:number}|null>(null);
+ const [focusTime,setFocusTime]=useState<number|null>(null),[previousRange,setPreviousRange]=useState<{start:number;end:number}|null>(null),[scrollRequest,setScrollRequest]=useState(0);
+ const hasListeningPosition=useRef(false);
+ const captionScroll=useRef<HTMLDivElement>(null);
  const sourceClips=clips.filter(c=>c.sourceId===source);
  const displayedClips=mode==='paragraph'?paragraphClips(sourceClips):sourceClips;
+ const focusPoint=position.playing?position.time:focusTime;
+ const focusClip=focusPoint===null?undefined:unitAt(displayedClips,focusPoint);
+ const focusUnit=focusClip&&focusPoint!==null?unitAt(clipUnits(focusClip,mode),focusPoint):undefined;
+ useEffect(()=>{const frame=requestAnimationFrame(()=>{const list=captionScroll.current;const item=list?.querySelector<HTMLElement>('[data-continuity="true"]');if(list&&item){const a=list.getBoundingClientRect(),b=item.getBoundingClientRect();list.scrollTop+=b.top-a.top-list.clientHeight/3;}});return()=>cancelAnimationFrame(frame);},[mode,scrollRequest]);
+ function changeMode(next:typeof mode){
+  const point=position.playing?position.time:focusTime??selection?.start??start;
+  const oldClip=unitAt(displayedClips,point);
+  const oldUnit=oldClip?unitAt(clipUnits(oldClip,mode),point):undefined;
+  setPreviousRange(previous=>transitionMemory(mode,next,hasListeningPosition.current?oldUnit??null:null,previous));
+  setFocusTime(point);setMode(next);setAnchor(null);setSearch('');setScrollRequest(v=>v+1);
+ }
  const maxTime=Math.max(1,...sourceClips.map(c=>c.end));
  const changing=useRef(false);
  const clip=clips.find(c=>c.id===selected);
@@ -117,7 +134,7 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
    const safeStart=Math.round(range.start*1000)/1000;
    const safeEnd=Math.min(maxTime,Math.round(Math.max(range.end,safeStart+.2)*1000)/1000);
    setStart(safeStart);setEnd(safeEnd);setTarget(text);setSelection({start:range.start,end:range.end});
-   setPosition({time:range.start,playing:false});setDirty(true);setStatus('선택한 부분을 재생합니다. 변경한 구간은 노트와 함께 저장할 수 있어요.');setError('');setAnchor(null);setPlayRequest(v=>v+1);
+   hasListeningPosition.current=true;setFocusTime(range.start);setPreviousRange(null);setPosition({time:range.start,playing:false});setDirty(true);setStatus('선택한 부분을 재생합니다. 변경한 구간은 노트와 함께 저장할 수 있어요.');setError('');setAnchor(null);setPlayRequest(v=>v+1);
   }catch(e){setError((e as Error).message);}finally{changing.current=false;setBusy(false);}
  }
  function wordClick(c:Clip,word:Word){
@@ -139,23 +156,24 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
 다시 듣고 들린 소리: ${reheard||'아직 없음'}
 원음을 직접 확인하지 않았다면 들었다고 하지 말고, 자막과 내 한글 표기에 근거한 발음 가설임을 밝혀주세요. 한글 표기는 정확한 발음 기호가 아니라 내 청각 인상의 기록입니다. 어떤 단어 경계·연결·약화·강세 때문에 그렇게 들릴 수 있는지 가능한 설명 1~2개와 불확실성을 알려주세요. 필요하면 혀·입술·성대 움직임을 설명하고, 다음 재청취에서 확인할 소리 단서 하나를 주세요. 내 발음 점수나 실제 화자의 발음을 확정하지 말아주세요.`:'';
  return <div className="sound-lab"><div className="page-heading"><h1>내 귀에는 이렇게 들렸어요.</h1><p>짧게 반복하고, 들린 소리를 적고, 피드백을 참고해 다시 들어보세요.</p></div>
-  <div className="lab-source"><label htmlFor="lab-source">연습할 영상</label><select id="lab-source" value={source} disabled={busy} onChange={async e=>{const next=e.target.value;try{if(dirty)await save();setSource(next);setSelected('');setSearch('');setAnchor(null);setSelection(null);setPlayRequest(0);}catch(x){setError((x as Error).message);}}}><option value="">영상 선택</option>{sources.map(s=><option key={s.id} value={s.id}>{s.title}</option>)}</select></div>
+  <div className="lab-source"><label htmlFor="lab-source">연습할 영상</label><select id="lab-source" value={source} disabled={busy} onChange={async e=>{const next=e.target.value;try{if(dirty)await save();setSource(next);hasListeningPosition.current=false;setFocusTime(null);setPreviousRange(null);setPosition({time:0,playing:false});setSelected('');setSearch('');setAnchor(null);setSelection(null);setPlayRequest(0);}catch(x){setError((x as Error).message);}}}><option value="">영상 선택</option>{sources.map(s=><option key={s.id} value={s.id}>{s.title}</option>)}</select></div>
   {error&&<p className="inline-error" role="alert">{error}</p>}
   <p role="status">{sources.find(s=>s.id===source)?.message}</p>
   {source&&<button className="secondary-button" disabled={busy||['fetching','analyzing'].includes(sources.find(s=>s.id===source)?.status||'')} onClick={async()=>{try{const r=await fetch('/api/sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:`https://www.youtube.com/watch?v=${source}`})});if(!r.ok)throw new Error('준비 요청에 실패했어요.');setStatus('자막과 AI 분석 준비를 요청했어요.');}catch(e){setError((e as Error).message);}}}>자막·AI 분석 준비</button>}
   <div className="lab-layout"><div className="lab-listen">
-   {clip?<><LoopPlayer key={clip.sourceId} clip={clip} start={start} end={end} onBoundary={boundary} maxTime={maxTime} playRequest={playRequest} onPosition={(time,playing)=>setPosition(p=>Math.abs(p.time-time)>.08||p.playing!==playing?{time,playing}:p)}/><div className="lab-now"><b>{position.playing?'재생 중':'현재 위치'} {time(position.time)}</b><span>{position.playing?activeUnit?.text||target||clip.text:target||clip.text}</span><small>단어·청크·문장 위치는 자막 시간 기반 추정</small></div>
+   {clip?<><LoopPlayer key={clip.sourceId} clip={clip} start={start} end={end} onBoundary={boundary} maxTime={maxTime} playRequest={playRequest} onPosition={(time,playing)=>{if(playing){hasListeningPosition.current=true;setFocusTime(Math.min(time,end-.001));}setPosition(p=>Math.abs(p.time-time)>.08||p.playing!==playing?{time,playing}:p);}}/><div className="lab-now"><b>{position.playing?'재생 중':'현재 위치'} {time(position.time)}</b><span>{position.playing?activeUnit?.text||target||clip.text:target||clip.text}</span><small>단어·청크·문장 위치는 자막 시간 기반 추정</small></div>
     <section className="lab-range"><h2>안 들리는 만큼만 잘라 듣기</h2><p>문장이나 청크의 시작·끝을 직접 맞추세요. 자막 구간이 문장 경계와 같지는 않아요.</p><div className="lab-range-inputs"><label>시작 (초)<input type="number" step="0.1" min={0} max={end-.2} value={Number.isFinite(start)?start:''} onChange={e=>edit(()=>setStart(e.target.valueAsNumber))}/></label><label>끝 (초)<input type="number" step="0.1" min={start+.2} max={maxTime} value={Number.isFinite(end)?end:''} onChange={e=>edit(()=>setEnd(e.target.valueAsNumber))}/></label><button className="secondary-button" onClick={()=>edit(()=>{setStart(clip.start);setEnd(clip.end);})}>자막 구간으로 복원</button></div><small>선택한 부분의 소리가 잘리면 시작·끝을 0.1초씩 조정하세요. 단어 시간은 추정이며 YouTube 탐색에도 오차가 있을 수 있어요.</small></section>
    </>:<div className="lab-empty"><h2>오른쪽 자막을 누르면 바로 재생됩니다.</h2><p>자막 목록에서 찾은 뒤, 실제 소리를 들으며 문장이나 청크의 범위를 조정할 수 있어요.</p></div>}
   </div><section className="lab-clips lab-captions" aria-label="자막 선택">
    <div className="section-heading"><h2>자막을 눌러 바로 듣기</h2><span>{sourceClips.length}개 구간</span></div>
-   <div className="lab-modes" aria-label="선택 단위">{([['chunk','청크'],['sentence','문장'],['paragraph','문단'],['word','단어 범위']] as const).map(([value,label])=><button key={value} aria-pressed={mode===value} onClick={()=>{setMode(value);setAnchor(null);}}>{label}</button>)}</div>
+   <div className="lab-modes" aria-label="선택 단위">{([['chunk','청크'],['sentence','문장'],['paragraph','문단'],['word','단어 범위']] as const).map(([value,label])=><button key={value} aria-pressed={mode===value} disabled={busy} onClick={()=>changeMode(value)}>{label}</button>)}</div>
+   <p className="lab-continuity-note">단위를 바꿔도 재생은 이어집니다. 노란색은 상위 보기로 옮기기 직전에 듣던 부분, 파란 테두리는 현재 위치, 파란 밑줄은 재생 중인 부분입니다. 새 구간을 누르면 노란색은 사라집니다. 반복 범위는 자막을 누를 때 바뀝니다. <button type="button" onClick={()=>changeMode(mode)}>현재 위치로 돌아가기</button></p>
    {mode==='paragraph'&&!displayedClips.length&&<p>AI 분석이 완료되면 의미에 따라 묶은 문단을 선택할 수 있어요.</p>}
-   {mode==='chunk'&&sourceClips.some(c=>!c.chunks)&&<p>아직 AI 청크 분석이 없는 구간은 규칙으로 나눈 임시 청크입니다.</p>}
-   <p className="lab-timing-note">{mode==='word'?'시작 단어 → 마지막 단어를 누르면 두 단어를 포함해 재생합니다.':`${mode==='paragraph'?'문단':mode==='chunk'?'청크':'문장'}을 누르면 해당 범위를 바로 재생합니다.`}<br/>{sourceClips.some(c=>c.sentenceStatus==='runtime-ai')?'앱에서 AI가 전체 자막을 분석한 결과입니다.':sourceClips.some(c=>c.sentenceStatus==='ai-reviewed')?'기존에 저장한 문장 분석입니다. 새 AI 청크·문단 분석은 별도로 준비하세요.':'AI 분석 전 자료입니다. 자막 경계를 실제 문장 경계로 확정하지 않습니다.'} 원본 자막의 오류는 남아 있을 수 있으며, 재생 시간은 추정입니다.</p>
+   {(mode==='chunk'||mode==='sentence')&&sourceClips.some(c=>!c.chunks)&&<p>아직 AI 청크 분석이 없는 구간은 규칙으로 나눈 임시 청크입니다.</p>}
+   <p className="lab-timing-note">{mode==='word'?'시작 단어 → 마지막 단어를 누르면 두 단어를 포함해 재생합니다.':(mode==='paragraph'?'문장을 누르면 그 문장만, 시간 옆 ▶를 누르면 문단 전체를 재생합니다.':mode==='sentence'?'청크를 누르면 그 청크만, 시간 옆 ▶를 누르면 문장 전체를 재생합니다.':'청크를 누르면 해당 청크를 바로 재생합니다.')}<br/>{sourceClips.some(c=>c.sentenceStatus==='runtime-ai')?'앱에서 AI가 전체 자막을 분석한 결과입니다.':sourceClips.some(c=>c.sentenceStatus==='ai-reviewed')?'기존에 저장한 문장 분석입니다. 새 AI 청크·문단 분석은 별도로 준비하세요.':'AI 분석 전 자료입니다. 자막 경계를 실제 문장 경계로 확정하지 않습니다.'} 원본 자막의 오류는 남아 있을 수 있으며, 재생 시간은 추정입니다.</p>
    {anchor&&<div className="lab-anchor" role="status">시작: “{anchor.word.text}” · 마지막 단어를 선택하세요.<button onClick={()=>setAnchor(null)}>선택 취소</button></div>}
    <input aria-label="자막 검색" placeholder="찾고 싶은 영어 단어로 검색" value={search} onChange={e=>setSearch(e.target.value)}/>
-   <div className="lab-caption-scroll">{displayedClips.filter(c=>c.text.toLowerCase().includes(search.toLowerCase())).map(c=>{
+   <div className="lab-caption-scroll" ref={captionScroll}>{displayedClips.filter(c=>c.text.toLowerCase().includes(search.toLowerCase())).map(c=>{
     const words=wordsFor(c);const current=position.playing&&position.time>=c.start&&position.time<c.end;
     return <article key={c.id} className={'lab-caption '+(c.id===selected?'selected ':'')+(current?'is-current':'')}>
      <button className="lab-caption-time" disabled={busy} onClick={()=>void choose(c)} aria-label={`${time(c.start)} 자막 전체 재생`}>{time(c.start)} – {time(c.end)} <Play size={12}/>{notes.some(n=>n.exerciseId===c.id)&&<small>기록 있음</small>}</button>
@@ -164,9 +182,22 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
       const chosen=selection&&w.start>=selection.start&&w.end<=selection.end;
       return <button key={w.index} disabled={busy} aria-label={`${w.text} (${time(w.start)}) 단어`} aria-pressed={!!chosen} aria-current={now?'true':undefined} className={(now?'speaking ':'')+(chosen?'range-selected ':'')+(anchor?.clip.id===c.id&&anchor.word.index===w.index?'anchor-word':'')} onClick={()=>wordClick(c,w)}>{w.text}</button>;
      }):clipUnits(c,mode).map((u,i)=>{
-      const now=current&&position.time>=u.start&&position.time<u.end;
-      const chosen=selection&&Math.abs(u.start-selection.start)<.01&&Math.abs(u.end-selection.end)<.01;
-      return <button key={i} disabled={busy} className={(now?'speaking ':'')+(chosen?'range-selected':'')} aria-current={now?'true':undefined} aria-pressed={!!chosen} onClick={()=>void choose(c,u,u.text)}><span>{u.text}</span>{mode==='sentence'&&(c.sentenceStatus==='candidate'||(!c.sentenceStatus&&u.candidate))&&<small>경계 미확인 · 임시 구간</small>}</button>;
+      const focused=c.id===focusClip?.id&&u.start===focusUnit?.start&&u.end===focusUnit?.end;
+      const memory=previousRange&&previousRange.start>=u.start-.001&&previousRange.end<=u.end+.001?previousRange:null;
+      if(mode==='chunk')return <button key={i} data-continuity={focused?'true':undefined} disabled={busy} className={focused?'continuity-focus':''} aria-current={current&&position.time>=u.start&&position.time<u.end?'true':undefined} onClick={()=>void choose(c,u,u.text)}><HighlightedText words={words.filter(w=>w.end>u.start&&w.start<u.end)} range={memory}/></button>;
+      const children=mode==='paragraph'
+       ?sourceClips.filter(sentence=>sentence.paragraphId===c.paragraphId).map(sentence=>({clip:sentence,unit:clipUnits(sentence,'sentence')[0]}))
+       :clipUnits(c,'chunk').map(unit=>({clip:c,unit}));
+      const whole=!!memory&&memory.start<=u.start+.001&&memory.end>=u.end-.001;
+      const content=children.map(({clip:childClip,unit:child},j)=>{
+       const now=current&&position.time>=child.start&&position.time<child.end;
+       const chosen=!!selection&&Math.abs(child.start-selection.start)<.01&&Math.abs(child.end-selection.end)<.01;
+       return <React.Fragment key={j}>{j>0?' ':''}<button type="button" className="lab-inline-unit" disabled={busy} aria-label={`${mode==='paragraph'?'문장':'청크'} 재생: ${child.text}`} aria-current={now?'true':undefined} aria-pressed={chosen} onClick={()=>void choose(childClip,child,child.text)}><HighlightedText words={wordsFor(childClip).filter(w=>w.end>child.start&&w.start<child.end)} range={whole?null:memory}/></button></React.Fragment>;
+      });
+      return <div key={i} data-continuity={focused?'true':undefined} className={'lab-context '+(focused?'continuity-focus':'')}>
+       {whole?<mark className="continuity-memory">{content}</mark>:content}
+       {mode==='sentence'&&(c.sentenceStatus==='candidate'||(!c.sentenceStatus&&u.candidate))&&<small>경계 미확인 · 임시 구간</small>}
+      </div>;
      })}</div>
     </article>;
    })}{!loaded?<p>구간을 불러오고 있어요.</p>:!sourceClips.length?<p>‘내 영상’에서 영상을 추가하거나 준비 상태를 확인해주세요.</p>:!sourceClips.some(c=>c.text.toLowerCase().includes(search.toLowerCase()))&&<p>검색 결과가 없어요.</p>}</div>

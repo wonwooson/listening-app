@@ -22,3 +22,29 @@ export function unitsFor(words:Word[],mode:'chunk'|'sentence'):Unit[]{
  return result;
 }
 export function selectedRange(a:Word,b:Word){return {start:Math.min(a.start,b.start),end:Math.max(a.end,b.end)};}
+
+// Half-open intervals choose the next unit at a shared boundary; gaps choose the next spoken unit.
+export function unitAt<T extends {start:number;end:number}>(units:T[],time:number):T|undefined{
+ return units.find(u=>u.start<=time&&time<u.end)??units.find(u=>u.start>time)??units[units.length-1];
+}
+
+// Keep a continuous remembered phrase in one marker, including its spaces.
+export function highlightRuns(words:Word[],range:{start:number;end:number}|null){
+ const runs:{text:string;highlighted:boolean}[]=[];
+ for(const word of words){
+  const highlighted=!!range&&word.end>range.start+.001&&word.start<range.end-.001;
+  const last=runs[runs.length-1];
+  if(last&&last.highlighted===highlighted)last.text+=' '+word.text;
+  else runs.push({text:word.text,highlighted});
+ }
+ return runs;
+}
+
+export function transitionMemory(
+ from:'chunk'|'sentence'|'paragraph'|'word',to:typeof from,
+ listened:{start:number;end:number}|null,previous:{start:number;end:number}|null
+){
+ if(from===to)return previous;
+ if((from==='chunk'&&to==='sentence')||(from==='sentence'&&to==='paragraph'))return listened;
+ return null;
+}
