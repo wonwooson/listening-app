@@ -138,12 +138,21 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
 
  const [followPlayback,setFollowPlayback]=useState(true);
  const captionScroll=useRef<HTMLDivElement>(null);
+ const [sidePanel,setSidePanel]=useState<'captions'|'note'>('captions');
+ const captionOffset=useRef(0);
+ function switchPanel(next:'captions'|'note'){
+  if(next===sidePanel)return;
+  if(next==='note'){captionOffset.current=captionScroll.current?.scrollTop??0;setFollowPlayback(false);}
+  setFollowPlayback(false);setSidePanel(next);
+  if(next==='captions')requestAnimationFrame(()=>{if(captionScroll.current)captionScroll.current.scrollTop=captionOffset.current;});
+ }
+
  const sourceClips=clips.filter(c=>c.sourceId===source);
  const displayedClips=mode==='paragraph'?paragraphClips(sourceClips):sourceClips;
  const focusPoint=position.playing?position.time:focusTime;
  const focusClip=focusPoint===null?undefined:unitAt(displayedClips,focusPoint);
  const focusUnit=focusClip&&focusPoint!==null?(mode==='word'?unitAt(wordsFor(focusClip),focusPoint):unitAt(clipUnits(focusClip,mode),focusPoint)):undefined;
- useEffect(()=>{if(!followPlayback)return;const frame=requestAnimationFrame(()=>{const list=captionScroll.current;const item=list?.querySelector<HTMLElement>('[data-continuity="true"]');if(list&&item){const a=list.getBoundingClientRect(),b=item.getBoundingClientRect();list.scrollTop+=b.top-a.top-list.clientHeight/3;}});return()=>cancelAnimationFrame(frame);},[mode,scrollRequest,focusClip?.id,focusUnit?.start,followPlayback]);
+ useEffect(()=>{if(!followPlayback||sidePanel!=='captions')return;const frame=requestAnimationFrame(()=>{const list=captionScroll.current;const item=list?.querySelector<HTMLElement>('[data-continuity="true"]');if(list&&item){const a=list.getBoundingClientRect(),b=item.getBoundingClientRect();list.scrollTop+=b.top-a.top-list.clientHeight/3;}});return()=>cancelAnimationFrame(frame);},[mode,scrollRequest,focusClip?.id,focusUnit?.start,followPlayback,sidePanel]);
  function changeMode(next:typeof mode,point=position.playing?position.time:focusTime??selection?.start??start){
   const oldClip=unitAt(displayedClips,point);
   const oldUnit=oldClip?unitAt(clipUnits(oldClip,mode),point):undefined;
@@ -154,7 +163,7 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
   mode==='word'?wordsFor(c).map(word=>({clip:c,...word,word})):clipUnits(c,mode).map(u=>({clip:c,...u,word:undefined as Word|undefined})));
  const keyboardItem=keyboardTime===null?undefined:unitAt(keyboardItems,keyboardTime);
  useEffect(()=>{
-  if(!keyboardItem)return;
+  if(!keyboardItem||sidePanel!=='captions')return;
   const frame=requestAnimationFrame(()=>{const list=captionScroll.current,item=list?.querySelector<HTMLElement>('[data-keyboard="true"]');if(list&&item){const a=list.getBoundingClientRect(),b=item.getBoundingClientRect();if(b.top<a.top||b.bottom>a.bottom)list.scrollTop+=b.top-a.top-list.clientHeight/3;}});
   return()=>cancelAnimationFrame(frame);
  },[keyboardItem?.start,mode,search]);
@@ -235,7 +244,9 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
   <div className="lab-layout"><div className="lab-listen">
    {clip?<><LoopPlayer key={clip.sourceId} clip={clip} start={start} end={end} maxTime={maxTime} playRequest={playRequest} playKind={playKind} controls={playerControls} onPosition={(time,playing,continuous,moved,rangeEnd)=>{if(playing||moved){startLearning();hasListeningPosition.current=true;setFocusTime(continuous?time:Math.min(time,rangeEnd-.001));}if(moved){setKeyboardTime(null);setFollowPlayback(true);setPreviousRange(null);setSearch('');setAnchor(null);setScrollRequest(v=>v+1);}setPosition(p=>Math.abs(p.time-time)>.08||p.playing!==playing?{time,playing}:p);}}/><div className="lab-now"><b>{position.playing?'재생 중':'현재 위치'} {time(position.time)}</b><span>{activeUnit?.text||(hasListeningPosition.current?'이 위치에는 자막이 없습니다.':target||clip.text)}</span><small>단어·청크·문장 위치는 자막 시간 기반 추정</small></div>
    </>:<div className="lab-empty"><h2>오른쪽 자막을 누르면 바로 재생됩니다.</h2><p>청크·문장·문단을 선택하거나, 시작 단어와 마지막 단어를 골라 들을 수 있어요.</p></div>}
-  </div><section className="lab-clips lab-captions" aria-label="자막 선택">
+  </div><div className="lab-side">
+   <div className="lab-side-tabs" role="tablist" aria-label="학습 패널">{([['captions','자막'],['note','소리 노트']] as const).map(([value,label])=><button key={value} type="button" role="tab" id={'tab-'+value} aria-selected={sidePanel===value} aria-controls={'panel-'+value} tabIndex={sidePanel===value?0:-1} onClick={()=>switchPanel(value)} onKeyDown={e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const next=e.key==='Home'?'captions':e.key==='End'?'note':sidePanel==='captions'?'note':'captions';switchPanel(next);document.getElementById('tab-'+next)?.focus();}}}>{label}</button>)}</div>
+   <section id="panel-captions" role="tabpanel" aria-labelledby="tab-captions" hidden={sidePanel!=='captions'} className="lab-clips lab-captions" aria-label="자막 선택">
    <div className="section-heading"><h2>자막을 눌러 바로 듣기</h2><span>{sourceClips.length}개 구간</span></div>
    <div className="lab-modes" aria-label="선택 단위">{([['chunk','청크'],['sentence','문장'],['paragraph','문단'],['word','단어 범위']] as const).map(([value,label])=><button key={value} aria-pressed={mode===value} disabled={busy} onClick={()=>changeMode(value)}>{label}</button>)}</div>
    <div className="lab-caption-actions"><button type="button" onClick={()=>changeMode(mode)}>현재 위치로 돌아가기</button><button type="button" aria-expanded={guideOpen} aria-controls="lab-guide" onClick={toggleGuide}>사용 안내 {guideOpen?'접기':'보기'}</button></div>
@@ -277,7 +288,9 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
      })}</div>
     </article>;
    })}{!loaded?<p>구간을 불러오고 있어요.</p>:!sourceClips.length?<p>‘내 영상’에서 영상을 추가하거나 준비 상태를 확인해주세요.</p>:!sourceClips.some(c=>c.text.toLowerCase().includes(search.toLowerCase()))&&<p>검색 결과가 없어요.</p>}</div>
-  </section></div><aside className="lab-notebook">{clip?<>
+  </section><section id="panel-note" role="tabpanel" aria-labelledby="tab-note" hidden={sidePanel!=='note'} className="lab-note-panel">
+   {clip&&<div className="lab-note-context"><div><b>기록할 구간</b><span>{time(start)} – {time(end)}</span></div><p lang="en">{target||clip.text}</p><div className="button-row"><button type="button" className="secondary-button" disabled={busy} onClick={()=>{setPlayKind('once');setPlayRequest(v=>v+1);}}><Play size={15}/> 이 구간 듣기</button><button type="button" className="plain-button" onClick={()=>switchPanel('captions')}>자막으로 돌아가기</button></div></div>}
+   <aside className="lab-notebook">{clip?<>
    <h2>소리를 비교하는 노트</h2><label htmlFor="heard">1. 처음 들린 소리</label><textarea id="heard" maxLength={12000} value={heard} onChange={e=>edit(()=>setHeard(e.target.value))} placeholder="맞는 철자를 찾지 말고, 들리는 그대로 한글로 적어보세요. 안 들린 곳은 (…)로 남겨도 돼요."/>
    <button className="plain-button" onClick={()=>setShow(!show)}>{show?'주변 자막 접기':'주변 자막 확인하기'}</button>{show&&<div className="lab-transcript"><p lang="en">{clip.text}</p><small>수집한 자막 · 원음 대조 전</small></div>}
    <label htmlFor="target">집중할 영어 구절</label><input id="target" maxLength={12000} value={target} onChange={e=>edit(()=>setTarget(e.target.value))} placeholder="예: what it does"/>
@@ -286,7 +299,7 @@ export default function SoundLab({sources,activeSource,ai}:{sources:Source[];act
    {promptVisible&&<textarea aria-label="직접 복사할 질문" readOnly value={prompt} onFocus={e=>e.target.select()}/>}
    <textarea id="feedback" maxLength={12000} value={feedback} onChange={e=>edit(()=>setFeedback(e.target.value))} placeholder="대화에서 받은 피드백을 여기에 붙여넣으세요."/>
    <label htmlFor="reheard">3. 피드백을 참고해 다시 들은 소리</label><textarea id="reheard" maxLength={12000} value={reheard} onChange={e=>edit(()=>setReheard(e.target.value))} placeholder="처음과 달리 들리는 부분, 여전히 안 들리는 부분을 적으세요. 이 기록도 다음 질문에 포함됩니다."/>
-   <button className="primary-button" disabled={busy} onClick={()=>void save().catch(e=>setError(e.message))}><Save size={16}/> 구간과 기록 저장</button><p className="lab-hint" role="status">{status||'구간을 바꿀 때 기록을 저장합니다. 메뉴 이동 전에는 저장 버튼을 눌러주세요.'}</p>
-  </>:<><h2>소리를 비교하는 노트</h2><p>구간을 고르면 내가 들은 소리와 피드백, 다시 들은 소리를 나란히 남길 수 있어요.</p><p>한글 표기는 정답이 아니라 내 귀에 어떻게 들렸는지를 확인하는 기록이에요.</p></>}</aside>
+   <button className="primary-button" disabled={busy} onClick={()=>void save().catch(e=>setError(e.message))}><Save size={16}/> 구간과 기록 저장</button><p className="lab-hint" role="status">{status||'탭을 바꿔도 작성 내용은 유지됩니다. 연습을 마치면 구간과 기록을 저장하세요.'}</p>
+  </>:<><h2>소리를 비교하는 노트</h2><p>구간을 고르면 내가 들은 소리와 피드백, 다시 들은 소리를 나란히 남길 수 있어요.</p><p>한글 표기는 정답이 아니라 내 귀에 어떻게 들렸는지를 확인하는 기록이에요.</p></>}</aside></section></div></div>
  </div>;
 }
