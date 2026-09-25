@@ -1,9 +1,11 @@
-import json, re, sqlite3, uuid, random
+import json, re, sqlite3, uuid
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 from contextlib import contextmanager
-from .content import EXERCISES, GOALS, BASELINE
+from .content import EXERCISES, GOALS, BASELINE, SCORED_QUALITIES
+
+RUN_SIZE = 12
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def video_id(url):
@@ -72,29 +74,35 @@ def summarize(store):
         fresh=[x for x in a if x.get('firstExposure') and not x.get('helped') and x.get('plays')==1]
         skills.append({'id':key,'label':label,'count':len(a),'fresh':len(fresh),'correct':sum(x.get('correct') is True for x in fresh),
            'state':'관찰 부족' if len(fresh)<3 else ('새 사례에서 이해 중' if sum(x.get('correct') is True for x in fresh)/len(fresh)>=.7 else '도움과 함께 연습 중')})
-    reviews=[r for r in store.all('review') if r['due']<=now()]
+    known={e['id'] for e in store.all('exercise')}
+    reviews=[r for r in store.all('review') if r['due']<=now() and r['exerciseId'] in known]
     return {'attempts':attempts[-100:][::-1],'skills':skills,'due':len(reviews),'days':len(set(x['at'][:10] for x in attempts)),
             'total':len(attempts),'events':len(events),'baseline':store.get('baseline','initial')}
 
-def choose_session(store,source=None,goal=None):
-    active=[s for s in store.all('session') if s['status']=='active']
-    if active: return active[-1]
+def cloze_items(store,source_id,goal=None):
+    """The video's AI-chosen blanks, in playback order. Rule-based caption blocks are never queued here."""
     flagged={x['exerciseId'] for x in store.all('event') if x.get('type')=='content_issue'}
-    exercises=[e for e in store.all('exercise') if (not goal or e['goal']==goal) and e['id'] not in flagged]
-    attempts=store.all('attempt'); seen={a['exerciseId'] for a in attempts}
-    sources=store.all('source'); chosen=source or (store.get('preference','active') or {}).get('sourceId')
-    due={r['exerciseId'] for r in store.all('review') if r['due']<=now()}
-    misses=[a['goal'] for a in attempts[-15:] if a.get('scored') and not a.get('correct')]
-    focus=goal or (max(set(misses),key=misses.count) if misses else 'polarity')
-    random.shuffle(exercises)
-    ordered=[]
-    ordered.extend([e for e in exercises if e['id'] in due][:1])
-    # Authored audio is a verified meaning task. Video candidates remain self-reflection.
-    ordered.extend(sorted([e for e in exercises if e['kind']=='speech' and e not in ordered],key=lambda e:(e['id'] in seen, e['goal']!=focus))[:3])
-    vids=[e for e in exercises if e['kind']=='youtube' and (not chosen or e['sourceId']==chosen)]
-    ordered.extend(sorted(vids,key=lambda e:e['id'] in seen)[:1])
-    if len(ordered)<5: ordered.extend([e for e in exercises if e not in ordered][:5-len(ordered)])
-    s={'id':str(uuid.uuid4()),'exerciseIds':[e['id'] for e in ordered],'index':0,'status':'active','startedAt':now(),'sourceId':chosen,'goal':goal}
+    items=[e for e in store.all('exercise') if e.get('quality')=='cloze-ai' and e['sourceId']==source_id
+           and e['id'] not in flagged and (not goal or e['goal']==goal)]
+    return sorted(items,key=lambda e:(e['start'],e['id']))
+
+def choose_session(store,source=None,goal=None,start=None):
+    chosen=source or (store.get('preference','active') or {}).get('sourceId')
+    # Checked before touching the active run, so a video without blanks never discards work in progress.
+    items=cloze_items(store,chosen,goal)
+    if not items: raise ValueError('이 영상의 빈칸 문항이 아직 준비되지 않았어요. 빈칸 문항 준비를 먼저 실행해주세요.')
+    active=[s for s in store.all('session') if s['status']=='active']
+    if active:
+        current=active[-1]
+        # A different video, range or filter starts a fresh run instead of finishing the old one's leftovers.
+        if current.get('sourceId')==chosen and current.get('goal')==goal and not start: return current
+        store.put('session',current['id'],{**current,'status':'abandoned','endedAt':now()})
+    answered={a['exerciseId'] for a in store.all('attempt')}
+    begin=next((i for i,e in enumerate(items) if start in (e['id'],e.get('clipId'))),None) if start else None
+    if begin is None: begin=next((i for i,e in enumerate(items) if e['id'] not in answered),0)
+    ordered=items[begin:begin+RUN_SIZE]
+    s={'id':str(uuid.uuid4()),'exerciseIds':[e['id'] for e in ordered],'index':0,'status':'active','startedAt':now(),
+       'sourceId':chosen,'goal':goal,'mode':'cloze'}
     store.put('session',s['id'],s); return s
 
 def submit(store,session_id,exercise_id,answer,reflection=None,note=''):
@@ -108,13 +116,14 @@ def submit(store,session_id,exercise_id,answer,reflection=None,note=''):
     ev=[x for x in store.all('event') if x.get('sessionId')==session_id and x.get('exerciseId')==exercise_id]
     played=any(x.get('type') in ('played','external_listen') for x in ev)
     if not played: raise ValueError('먼저 소리를 재생해주세요.')
-    scored=e['quality']=='authored' and bool(e.get('options'))
+    scored=e['quality'] in SCORED_QUALITIES and bool(e.get('options')) and type(e.get('answer')) is int
     if scored and answer not in list(range(len(e['options'])))+[-1]: raise ValueError('답변을 선택해주세요.')
     if not scored and reflection not in ('understood','partial','lost'): raise ValueError('들린 정도를 선택해주세요.')
     prev=[]
     for attempt in store.all('attempt'):
         old=store.get('exercise',attempt['exerciseId'])
-        overlap=old and e['kind']=='youtube' and old['sourceId']==e['sourceId'] and old['start']<e['end'] and old['end']>e['start']
+        # Only the same kind of item counts as prior exposure; legacy caption blocks overlap almost every sentence.
+        overlap=old and e['kind']=='youtube' and old['sourceId']==e['sourceId'] and old['quality']==e['quality'] and old['start']<e['end'] and old['end']>e['start']
         if attempt['exerciseId']==exercise_id or overlap:prev.append(attempt)
     help_types={'transcript','meaning','slow','external_listen','familiar','feedback'}
     helped=any(x['type'] in help_types for x in ev)

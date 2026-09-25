@@ -17,7 +17,34 @@ class ApiTests(unittest.TestCase):
         self.scheduler=patch.object(self.server,'maybe_recommend');self.scheduler.start()
         self.client=TestClient(self.server.app);self.client.__enter__()
     def tearDown(self):self.client.__exit__(None,None,None);self.scheduler.stop()
+    def install_blanks(self,source,count=3,base=400.0,artifact=False):
+        """Blanks built from a stored analysis shape. Times stay outside the seeded prior-exposure windows."""
+        from backend import cloze
+        words=["We","haven't","confirmed","the","cause","yet."]
+        clips=[]
+        for index in range(count):
+            start=base+index*10
+            clips.append({'id':f'{source}:apirev:{index}','sourceId':source,'kind':'youtube','start':start,
+                'end':start+len(words),'text':' '.join(words),
+                'words':[{'text':w,'start':start+i,'end':start+i+1} for i,w in enumerate(words)],
+                'chunks':[{'text':' '.join(words),'start':start,'end':start+len(words),'first':0,'last':len(words)-1}],
+                'paragraphId':f'{source}:apirev:p0','sentenceStatus':'runtime-ai','timingQuality':'caption-estimate'})
+        plan={'version':cloze.VERSION,'revision':'apirev','status':'complete','nextSentence':count,'sentenceCount':count,
+              'targets':list(cloze.TARGETS),'rejected':[],
+              'items':[{'sentence':i,'clipId':c['id'],'maskIndex':1,'category':'polarity','distractors':['have','had']}
+                       for i,c in enumerate(clips)]}
+        analysis={'revision':'apirev','clips':clips}
+        if artifact:
+            self.server.store.put('preference','analysis:'+source,analysis)
+            self.server.store.put('preference','cloze:'+source,plan)
+            self.server.store.put('source',source,{'id':source,'title':'빈칸 테스트 영상','count':count,
+                'url':'https://www.youtube.com/watch?v='+source,'status':'ready','message':'준비 완료'})
+        items=cloze.exercises(analysis,plan)
+        for e in items: self.server.store.put('exercise',e['id'],e)
+        return [e['id'] for e in items]
     def test_full_session_backup_restore_and_resume(self):
+        self.install_blanks('UVnck7nWaB4')
+        before=self.client.get('/api/state').json()['summary']['total']
         s=self.client.post('/api/sessions',json={}).json();bundle=self.client.get('/api/sessions/'+s['id']).json()
         for i,e in enumerate(bundle['exercises']):
             event={'id':f'event-{i}','type':'played','sessionId':s['id'],'exerciseId':e['id']}
@@ -34,17 +61,20 @@ class ApiTests(unittest.TestCase):
         backup=self.client.get('/api/backup').json()
         self.assertEqual(self.client.post('/api/restore',json=backup).status_code,200)
         report=self.client.get('/api/state').json()
-        self.assertEqual(report['summary']['total'],len(bundle['exercises']))
+        self.assertEqual(report['summary']['total']-before,len(bundle['exercises']))
+        self.assertTrue(all(e['quality']=='cloze-ai' for e in bundle['exercises']))
     def test_security_and_invalid_backup(self):
         self.assertEqual(self.client.post('/api/sources',json={'url':'http://localhost:9999/private'}).status_code,400)
         self.assertEqual(self.client.post('/api/sessions',json={},headers={'Origin':'https://evil.test'}).status_code,403)
         self.assertEqual(self.client.post('/api/restore',json={'version':999}).status_code,400)
     def test_duplicate_source_preserves_record(self):
+        before=len(self.server.store.all('source'))
         with patch.object(self.server.pool,'submit'):
             a=self.client.post('/api/sources',json={'url':'https://youtu.be/UVnck7nWaB4'}).json()
             b=self.client.post('/api/sources',json={'url':'https://www.youtube.com/watch?v=UVnck7nWaB4&t=100'}).json()
         self.assertEqual(a['id'],b['id'])
-        self.assertEqual(len(self.server.store.all('source')),1)
+        self.assertEqual(len(self.server.store.all('source')),before)
+        self.assertEqual(len([s for s in self.server.store.all('source') if s['id']==a['id']]),1)
 
     def test_sound_notes_roundtrip_backup_and_validation(self):
         clip=self.client.get('/api/sound-lab').json()['clips'][0]
@@ -117,5 +147,51 @@ class ApiTests(unittest.TestCase):
             sent=post.call_args.kwargs['json']
             self.assertIn('NOT heard the audio',sent['system'])
             self.assertIn('왓잇',sent['prompt'])
+
+    def test_blank_overview_progress_and_jump(self):
+        ids=self.install_blanks('CLOZEvideo1',artifact=True)
+        overview=self.client.get('/api/cloze/CLOZEvideo1').json()
+        self.assertEqual([i['id'] for i in overview['items']],ids)
+        self.assertEqual(overview['status'],'complete')
+        self.assertEqual(overview['sentenceCount'],3)
+        self.assertEqual(overview['maskSource'],'stored-ai')
+        self.assertEqual(overview['timingQuality'],'caption-estimate')
+        self.assertEqual(overview['items'][0]['maskIndex'],1)
+        self.assertEqual(overview['items'][0]['masked'],"We ____ confirmed the cause yet.")
+        self.assertTrue(overview['items'][0]['words'] and overview['items'][0]['chunks'])
+        session=self.client.post('/api/sessions',json={'sourceId':'CLOZEvideo1','startClipId':ids[1]}).json()
+        self.assertEqual(session['exerciseIds'][0],ids[1])
+        exercise=self.client.get('/api/sessions/'+session['id']).json()['exercises'][0]
+        self.client.post('/api/events',json={'id':'blank-play','type':'played','sessionId':session['id'],'exerciseId':exercise['id']})
+        answer=self.client.post('/api/attempts',json={'sessionId':session['id'],'exerciseId':exercise['id'],
+            'answer':exercise['answer'],'note':'해븐트'})
+        self.assertEqual(answer.status_code,200,answer.text)
+        self.assertTrue(answer.json()['correct']);self.assertEqual(answer.json()['note'],'해븐트')
+        after={i['id']:i['state'] for i in self.client.get('/api/cloze/CLOZEvideo1').json()['items']}
+        self.assertEqual(after[ids[1]],'correct');self.assertEqual(after[ids[0]],'open')
+
+    def test_blank_session_requires_prepared_items(self):
+        self.assertEqual(self.client.post('/api/sessions',json={'sourceId':'EMPTYvideo1'}).status_code,409)
+        self.assertEqual(self.client.get('/api/cloze/EMPTYvideo1').status_code,404)
+
+    def test_blank_feedback_sends_one_sentence_only_and_caches(self):
+        ids=self.install_blanks('FEEDvideo01',artifact=True)
+        path='/api/cloze/'+ids[0].replace('#','%23')+'/feedback'
+        with patch.dict(os.environ,{'LISTENING_AI_MODEL':''}),patch.object(self.server,'configuration',
+                return_value={'provider':'openai','model':'x','configured':False}):
+            self.assertEqual(self.client.post(path,json={'heard':'해븐트'}).status_code,409)
+        with patch.object(self.server,'configuration',return_value={'provider':'gemini','model':'gemini-3.8-flash','configured':True}), \
+             patch.object(self.server.gemini,'generate',return_value='자막 텍스트 기반 가설입니다.') as generate:
+            first=self.client.post(path,json={'heard':'해븐트','picked':'have'})
+            self.assertEqual(first.status_code,200,first.text)
+            self.assertFalse(first.json()['cached'])
+            system,prompt=generate.call_args.args[0],generate.call_args.args[1]
+            self.assertIn('NOT heard the audio',system)
+            self.assertIn('해븐트',prompt);self.assertIn("We haven't confirmed the cause yet.",prompt)
+            self.assertNotIn('Thanks for watching',prompt)
+            self.assertLess(len(prompt),1200)
+            second=self.client.post(path,json={'heard':'해븐트','picked':'have'})
+            self.assertTrue(second.json()['cached']);self.assertEqual(generate.call_count,1)
+        self.assertEqual(self.client.post(path,json={'heard':'x'*2001}).status_code,400)
 
 if __name__=='__main__':unittest.main()

@@ -3,6 +3,8 @@ GOALS = {
     'polarity': '긍정·부정 구분', 'scope': '부정의 범위와 확실성',
     'pattern': '문장 구조 따라가기', 'numbers': '숫자와 단위', 'context': '설명의 흐름',
 }
+# Answers that can be checked against the transcript. Everything else stays self-reflection.
+SCORED_QUALITIES = {'authored', 'cloze-ai'}
 
 def item(id, text, goal, prompt, options, answer, explanation, pattern, meaning):
     return dict(id=id, sourceId='practice', kind='speech', text=text, goal=goal,

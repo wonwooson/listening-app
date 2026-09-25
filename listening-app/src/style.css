@@ -137,3 +137,28 @@
 .lab-mobile-playback{display:flex;gap:3px}
 .lab-mobile-playback button{min-height:32px;padding:3px 8px;line-height:1.4;font-size:12px;white-space:nowrap;border:1px solid #dce3f2;border-radius:7px;background:#f5f7fb;color:#52627c}
 .lab-mobile-playback button[aria-pressed=true]{background:#234ae3;border-color:#234ae3;color:white}
+.cloze-status{background:white;border:1px solid var(--border);border-radius:10px;padding:20px 22px;display:flex;flex-direction:column;gap:7px;font-size:13px;margin-bottom:20px}
+.cloze-status .muted{font-size:11px}
+.cloze-status b{font-size:20px;font-weight:700;color:var(--blue)}
+.cloze-status button{align-self:flex-start;margin-top:9px}
+.cloze-filters{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:18px}
+.cloze-filters button{padding:8px 13px;border:1px solid var(--border);border-radius:20px;background:white;color:#5b6a82;font-size:12px}
+.cloze-filters button.selected{border-color:var(--blue);background:#edf1ff;color:var(--blue);font-weight:600}
+.cloze-list{list-style:none;margin:20px 0 0;padding:0;border:1px solid var(--border);border-radius:9px;background:white;overflow:hidden}
+.cloze-row>button{display:block;width:100%;text-align:left;background:white;padding:14px 18px;border-bottom:1px solid #e9edf4;border-left:3px solid transparent}
+.cloze-row>button:hover{background:#f0f3fa}
+.cloze-row.is-correct>button{border-left-color:#25a186}
+.cloze-row.is-wrong>button{border-left-color:#d08b2f}
+.cloze-row.is-skipped>button{border-left-color:#b9c3d4}
+.cloze-row-meta{display:flex;gap:9px;align-items:center;font-size:10px;color:var(--muted)}
+.cloze-row-meta b{margin-left:auto;font-weight:600;color:#5b6a82}
+.cloze-row-text{display:block;font-family:'Segoe UI',sans-serif;font-size:14px;line-height:1.7;margin-top:5px;overflow-wrap:anywhere}
+.cloze-sentence{font-family:'Segoe UI',sans-serif;font-size:21px;line-height:1.9;background:#e9eef8;border-left:3px solid #7593e4;border-radius:0 8px 8px 0;padding:22px 25px;margin:20px 0;overflow-wrap:anywhere}
+.cloze-blank{display:inline-block;min-width:82px;border-bottom:3px solid var(--blue);color:transparent;vertical-align:baseline}
+.cloze-replay{font-size:11px;color:var(--blue);margin-top:10px}
+.cloze-heard{display:block;font-size:13px;font-weight:600;margin-bottom:16px}
+.cloze-heard input{width:100%;margin-top:8px;font-size:14px;font-weight:400}
+.cloze-heard-record{font-size:13px;color:#566e66}
+.cloze-replays{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
+.cloze-replays button{font-size:12px;padding:9px 13px}
+@media(max-width:680px){.cloze-sentence{font-size:18px;padding:16px}.cloze-status{padding:16px}.cloze-row-text{font-size:13px}}
