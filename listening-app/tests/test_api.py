@@ -194,4 +194,49 @@ class ApiTests(unittest.TestCase):
             self.assertTrue(second.json()['cached']);self.assertEqual(generate.call_count,1)
         self.assertEqual(self.client.post(path,json={'heard':'x'*2001}).status_code,400)
 
+    def test_study_session_marks_and_history(self):
+        self.install_blanks('STUDYapi001',artifact=True)
+        overview=self.client.get('/api/study/STUDYapi001').json()
+        self.assertEqual(len(overview['clips']),3)
+        self.assertIsNone(overview['session'])
+        self.assertEqual(overview['rangeMinutes'],[3,6,10,20])
+        self.assertEqual(overview['listeningSteps'],[1,2,3,4,5,6,7])
+        self.assertEqual(overview['markSteps'],[1,3,4,6,7])
+        self.assertEqual(overview['forms'],['affirmative','negative','question','past','perfect'])
+        clips=overview['clips']
+        body={'minutes':3,'start':clips[0]['start'],'end':clips[-1]['end'],'boundary':'sentence'}
+        self.assertEqual(self.client.post('/api/study/STUDYapi001/sessions',
+            json={**body,'end':body['end']+2}).status_code,400)
+        session=self.client.post('/api/study/STUDYapi001/sessions',json=body).json()
+        self.assertEqual(session['range']['sentenceCount'],3)
+        self.assertEqual(session['status'],'active')
+        marked=self.client.post(f"/api/study/sessions/{session['id']}/marks",
+            json={'step':1,'start':clips[1]['start'],'end':clips[1]['end'],'reason':'unheard','scope':'sentence'})
+        self.assertEqual(marked.status_code,200,marked.text)
+        saved=marked.json()['marks'][0]
+        self.assertEqual(saved['clipId'],clips[1]['id'])
+        self.assertEqual(saved['wordFirst'],0)
+        self.assertEqual(self.client.post(f"/api/study/sessions/{session['id']}/marks",
+            json={'step':2,'start':clips[1]['start'],'end':clips[1]['end'],'reason':'unheard','scope':'sentence'}).status_code,400)
+        for step in (1,2,3,4,5,6,7):
+            done=self.client.post(f"/api/study/sessions/{session['id']}/step",json={'step':step,'done':True})
+            self.assertEqual(done.status_code,200,done.text)
+        self.assertEqual(done.json()['status'],'done')
+        form=self.client.post(f"/api/study/sessions/{session['id']}/forms",
+            json={'clipId':clips[1]['id'],'form':'negative','done':True})
+        self.assertEqual(form.status_code,200,form.text)
+        self.assertIn('negative',form.json()['forms'][clips[1]['id']])
+        self.assertEqual(self.client.post(f"/api/study/sessions/{session['id']}/forms",
+            json={'clipId':clips[1]['id'],'form':'nope','done':True}).status_code,400)
+        self.assertEqual(self.client.post(f"/api/study/sessions/{session['id']}/shadowing",
+            json={'clipId':clips[1]['id'],'mode':'echo','rate':0.75}).status_code,200)
+        history=self.client.get('/api/study/history').json()
+        row=next(r for r in history if r['id']==session['id'])
+        self.assertEqual(row['markCount'],1)
+        self.assertEqual(row['title'],'빈칸 테스트 영상')
+        removed=self.client.post(f"/api/study/sessions/{session['id']}/marks",
+            json={'step':1,'start':clips[1]['start'],'end':clips[1]['end'],'remove':True}).json()
+        self.assertTrue(removed['removed']);self.assertEqual(removed['marks'],[])
+        self.assertEqual(self.client.get('/api/study/NOSUCHvid1').status_code,404)
+
 if __name__=='__main__':unittest.main()

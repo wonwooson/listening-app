@@ -1,12 +1,13 @@
 import React, {useEffect,useState,useRef,useCallback} from 'react';
 import {createRoot} from 'react-dom/client';
-import {Headphones, Play, Plus, BookOpen, Library, ChartNoAxesCombined, Settings, Volume2, ExternalLink, Download, Upload, ChevronRight, CircleHelp, X, LoaderCircle, CheckCircle2} from 'lucide-react';
+import {Headphones, Play, Plus, BookOpen, ListOrdered, Library, ChartNoAxesCombined, Settings, Volume2, ExternalLink, Download, Upload, ChevronRight, CircleHelp, X, LoaderCircle, CheckCircle2} from 'lucide-react';
 import './style.css';
 import SoundLab from './SoundLab';
 import LearningHistory from './LearningHistory';
 import type {SavedSoundNote} from './SoundNoteHistory';
 import GeminiSettings from './GeminiSettings';
 import Cloze from './Cloze';
+import StudyFlow from './StudyFlow';
 
 type Session={id:string;exerciseIds:string[];index:number;status:string;startedAt:string};
 type Attempt={exerciseId:string;goal:string;at:string;correct:boolean|null;scored:boolean;helped:boolean;firstExposure:boolean;note:string;reflection:string;plays:number};
@@ -27,7 +28,7 @@ function App(){
  useEffect(()=>{void refresh();const t=setInterval(()=>void refresh(),6000);return()=>clearInterval(t);},[refresh]);
  useEffect(()=>{if(toast){const t=setTimeout(()=>setToast(''),4000);return()=>clearTimeout(t);}},[toast]);
  async function add(ev:React.FormEvent){ev.preventDefault();if(!url.trim())return;setBusy(true);setError('');try{await api('/sources',{url});setUrl('');setPage('library');await refresh();setToast('영상 준비를 시작했어요. 기존 연습은 계속할 수 있어요.');}catch(x){setError((x as Error).message);}finally{setBusy(false);}}
- const nav=[['sound','소리 연습실',Headphones],['home','의미 이해 연습',Volume2],['library','내 영상',Library],['history','학습 기록',ChartNoAxesCombined],['baseline','나의 출발점',BookOpen],['settings','설정과 백업',Settings]] as const;
+ const nav=[['sound','소리 연습실',Headphones],['home','의미 이해 연습',Volume2],['study','단계별 정독 청취',ListOrdered],['library','내 영상',Library],['history','학습 기록',ChartNoAxesCombined],['baseline','나의 출발점',BookOpen],['settings','설정과 백업',Settings]] as const;
  const linkForm=<form className="link-form" onSubmit={add}><label htmlFor="video-url">새 영상으로 이어가기</label><div><input id="video-url" type="url" placeholder="YouTube 링크를 붙여넣으세요" value={url} onChange={e=>setUrl(e.target.value)} required/><button disabled={busy} aria-label="영상 추가">{busy?<LoaderCircle className="spin" size={20}/>:<Plus size={22}/>}</button></div><small>자막과 연습 구간은 자동으로 준비합니다.</small></form>;
  if(!state)return <main className="loading"><Headphones size={36}/><h1>듣는 노트를 열고 있어요</h1>{error?<><p>{error}</p><button onClick={()=>void refresh()}>다시 연결</button></>:<LoaderCircle className="spin"/>}</main>;
  const summary=state.summary;
@@ -37,6 +38,7 @@ function App(){
  {page==='settings'&&<GeminiSettings/>}
  {page==='sound'&&<SoundLab sources={state.sources} activeSource={soundNote?.sourceId??state.active?.sourceId} initialNote={soundNote??undefined} ai={state.ai.configured}/>}
  {page==='home'&&<Cloze sourceId={state.active?.sourceId} title={state.sources.find(s=>s.id===state.active?.sourceId)?.title??'선택한 영상'} sourceStatus={state.sources.find(s=>s.id===state.active?.sourceId)?.status??''} goals={state.goals} onError={setError} onOpenLibrary={()=>setPage('library')}/>}
+ {page==='study'&&<StudyFlow sourceId={state.active?.sourceId} onError={setError} onOpenLibrary={()=>setPage('library')}/>}
  {page==='library'&&<div className="page-content"><div className="page-heading"><h1>내 영상</h1><p>영상이 바뀌어도 지금까지의 연습은 이어집니다.</p></div>{linkForm}<div className="library-list">{state.sources.map(s=><SourceRow key={s.id} source={s} active={state.active?.sourceId===s.id} onSelect={async()=>{await api('/sources/'+s.id+'/select',{});await refresh();setToast('다음 연습의 주 영상으로 선택했어요.');}}/>)}</div><div className="info-box"><CircleHelp size={20}/><p>영상 자막은 틀릴 수 있어요. 음성과 대조하지 않은 구간은 자유 청취로 제공하며, 이해도를 확정 채점하지 않습니다. 준비가 안 되는 동안에도 기본 연습을 이어갈 수 있어요.</p></div><button className="primary-button" onClick={()=>setPage('home')}>의미 이해 연습으로 <Play size={17}/></button><section className="recommendations"><div className="section-heading"><h2>다음에 살펴볼 자료</h2><span>{state.recommendationCheck?.status==="checking"?"공식 자료 확인 중":"앱 사용 시 주간 확인"}</span></div>{state.recommendations.length?state.recommendations.map(r=><article key={r.id}><div><h3>{r.title}</h3><p>{r.reason}</p><small>{date(r.checkedAt)} 확인 · {r.available?"페이지 접근 확인":"현재 접근 확인 안 됨"}{r.type==="site"?" · 외부 학습 사이트":" · 자막은 추가 시 확인"}</small></div><a className="text-link" href={r.url} target="_blank" rel="noreferrer">자료 보기 <ExternalLink size={14}/></a></article>):<p className="muted">기술 설명과 관련 있는 공식 학습 자료를 확인하고 있어요.</p>}</section></div>}
  {page==='history'&&<LearningHistory skills={summary.skills} goals={state.goals} onOpen={note=>{setSoundNote(note);setPage('sound');}} onStart={()=>setPage('home')}/>}
  {page==='baseline'&&<div className="page-content"><div className="page-heading"><h1>나의 출발점</h1><p>한 달 뒤의 나와 비교할 수 있도록 처음의 반응을 남겼어요.</p></div><div className="baseline-paper"><span className="date-tag">{summary.baseline.date}</span><h2>{summary.baseline.summary}</h2>{summary.baseline.observations.map((o,i)=><p key={o}><span>{i+1}</span>{o}</p>)}<div className="info-box"><CircleHelp size={18}/><p>{summary.baseline.note}</p></div><footer>다음 비교 예정일 <b>{summary.baseline.reviewDate}</b><small>새로운 비슷한 난도의 발화로 짧게 확인합니다. 자동 알림은 설정되어 있지 않습니다.</small></footer></div></div>}

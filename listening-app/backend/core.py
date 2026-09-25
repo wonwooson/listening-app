@@ -45,6 +45,8 @@ class Store:
         return [json.loads(r[0]) for r in rows]
     def put(self,kind,id,value):
         with self.connect() as c: c.execute('INSERT INTO records VALUES (?,?,?) ON CONFLICT(kind,id) DO UPDATE SET body=excluded.body',(kind,id,json.dumps(value,ensure_ascii=False)))
+    def remove(self,kind,id):
+        with self.connect() as c: return c.execute('DELETE FROM records WHERE kind=? AND id=?',(kind,id)).rowcount>0
     def insert(self,kind,id,value):
         with self.connect() as c:
             return c.execute('INSERT OR IGNORE INTO records VALUES (?,?,?)',(kind,id,json.dumps(value,ensure_ascii=False))).rowcount>0
